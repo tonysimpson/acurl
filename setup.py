@@ -14,7 +14,8 @@ with open(os.path.join('acurl','version.py')) as f:
 # Building without nanoconfig
 cpy_extension = Extension('_acurl',
                           sources=['src/acurl.c', 'src/ae/ae.c','src/ae/zmalloc.c'],
-                          libraries=['curl']
+                          libraries=['curl'],
+                          extra_compile_args=['-g', '-fno-omit-frame-pointer'], # used for performance/debug
                          )
 
 

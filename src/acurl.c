@@ -41,7 +41,7 @@ struct RequestData{
 
 
 static void
-Session_dealloc(RequestData *self)
+RequestData_dealloc(RequestData *self)
 {
     Py_DECREF(self->session);
     curl_easy_cleanup(self->curl);
@@ -70,7 +70,7 @@ static PyTypeObject RequestDataType = {
     0,                         /* tp_setattro */
     0,                         /* tp_as_buffer */
     Py_TPFLAGS_DEFAULT,        /* tp_flags */
-    "",                        /* tp_doc */
+    "Request Data Type",                        /* tp_doc */
     0,                         /* tp_traverse */
     0,                         /* tp_clear */
     0,                         /* tp_richcompare */
@@ -101,12 +101,16 @@ int EventLoop_alive(struct aeEventLoop *eventLoop, long long id, void *clientDat
 static PyObject *
 EventLoop_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 {
-    EventLoop *self;
-
-    self = (EventLoop *)type->tp_alloc(type, 0);
-    if (self != NULL) {
-        self->event_loop = aeCreateEventLoop(10000);
-        self->complete_timer = NO_ACTIVE_TIMER_ID;
+    EventLoop *self = NULL;
+    PyObject *completion_callback;
+    static char *kwlist[] = {"completion_callback", NULL};
+    if (PyArg_ParseTupleAndKeywords(args, kwds, "O", kwlist, &completion_callback)) {
+        self = (EventLoop *)type->tp_alloc(type, 0);       
+        if (self != NULL) {
+            self->event_loop = aeCreateEventLoop(10000);
+            self->complete_timer = NO_ACTIVE_TIMER_ID;
+            self->complete_py_callback = completion_callback;
+        }
     }
     return (PyObject *)self;
 }
@@ -194,27 +198,17 @@ static PyTypeObject EventLoopType = {
 
 void complete_py_callback(EventLoop *loop) {
     int i;
+    PyObject *list;
     PyEval_RestoreThread(loop->thread_state);
+    list = PyList_New(loop->ready_to_complete_len);
     for(i = 0; i < loop->ready_to_complete_len; i++) {
-        RequestData *request_data = loop->ready_to_complete_list[i];
-        if(request_data->result == CURLE_OK) {
-            PyObject_CallObject(request_data->success_py_callback, NULL);
-        }
-        else 
-        {
-            PyObject *error_str = PyUnicode_FromString(curl_easy_strerror(request_data->result));
-            PyObject *args = PyTuple_Pack(1, error_str);
-            PyObject_CallObject(request_data->failure_py_callback, args);
-        }
-        Py_DECREF(request_data->session);
-        Py_DECREF(request_data->success_py_callback);
-        Py_DECREF(request_data->failure_py_callback);
+        PyList_SET_ITEM(list, i, (PyObject*)loop->ready_to_complete_list[i]);
+        //if(request_data->result == CURLE_OK) {
+        //PyObject *error_str = PyUnicode_FromString(curl_easy_strerror(request_data->result));
     }
+    PyObject *args = PyTuple_Pack(1, list);
+    PyObject_CallObject(loop->complete_py_callback, args);
     loop->thread_state = PyEval_SaveThread();
-    for(i = 0; i < loop->ready_to_complete_len; i++) {
-        RequestData *request_data = loop->ready_to_complete_list[i];
-        curl_easy_cleanup(request_data->curl);
-    }
     loop->ready_to_complete_len = 0;
 }
 
@@ -349,7 +343,7 @@ Session_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
     EventLoop *loop;
     
     static char *kwlist[] = {"loop", NULL};
-    if (! PyArg_ParseTupleAndKeywords(args, kwds, "|O", kwlist, &loop)) {
+    if (! PyArg_ParseTupleAndKeywords(args, kwds, "O", kwlist, &loop)) {
         return NULL;
     }
 
@@ -412,16 +406,17 @@ int do_request_start(struct aeEventLoop *eventLoop, long long id, void *clientDa
 static PyObject *
 Session_request(PyObject *self, PyObject *args, PyObject *kwds)
 {
-    static char *kwlist[] = {"url", "user_data", NULL};
+    static char *kwlist[] = {"url", NULL};
     char *url;
-    RequestData *request_data = (RequestData *)malloc(sizeof(RequestData));
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "|sOO", kwlist, &url, &request_data->success_py_callback,  &request_data->failure_py_callback)) {
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "s", kwlist, &url)) {
         return NULL;
     }
-    request_data->url = strdup(url);
+    RequestData *request_data = PyObject_New(RequestData, (PyTypeObject *)&RequestDataType);
+    //RequestData *request_data = (RequestData*)RequestDataType.tp_alloc(&RequestDataType, 0);
     Py_INCREF(self);
     request_data->session = (Session *)self;
+    request_data->url = strdup(url);
     aeCreateTimeEvent(SESSION_AE_LOOP(self), 0, do_request_start, request_data, NULL);
     Py_RETURN_NONE;
 }
@@ -503,6 +498,9 @@ PyInit__acurl(void)
     if (PyType_Ready(&EventLoopType) < 0)
         return NULL;
 
+    if (PyType_Ready(&RequestDataType) < 0)
+        return NULL;
+
     m = PyModule_Create(&_acurl_module);
 
     if(m != NULL) {
@@ -511,6 +509,8 @@ PyInit__acurl(void)
         PyModule_AddObject(m, "Session", (PyObject *)&SessionType);
         Py_INCREF(&EventLoopType);
         PyModule_AddObject(m, "EventLoop", (PyObject *)&EventLoopType);
+        Py_INCREF(&RequestDataType);
+        PyModule_AddObject(m, "RequestData", (PyObject *)&RequestDataType);
     }
     
     return m;

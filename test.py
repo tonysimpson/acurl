@@ -3,31 +3,29 @@ import threading
 import time
 import sys
 
-ev = _acurl.EventLoop()
+def complete(completed):
+    global num
+    num += len(completed)
+
+
+ev = _acurl.EventLoop(complete)
 
 def runner():
     ev.main()
 
 thread = threading.Thread(target=runner)
 
-N = 5000
-P = 5
+N = 10000
+P = 200
 
 num = 0
 failed = 0
-def success():
-    global num
-    num += 1
-    
-def failure(x):
-    global failed
-    failed += 1
-    
+
 t1 = time.time()
 for j in range(P):
     session = _acurl.Session(ev)
     for i in range(N//P):
-        session.request('http://127.0.0.1:9003', success, failure)
+        session.request('http://127.0.0.1:9003')
 t2 = time.time()
 last_num = num
 thread.start()
@@ -35,6 +33,7 @@ while num != N:
     if last_num != num:
         last_num = num
         print(num, failed)
+        time.sleep(0.0001)
 t3 = time.time()
 print(t2 - t1, t3 - t2, file=sys.stderr)
 print(N / (t3 - t2))
