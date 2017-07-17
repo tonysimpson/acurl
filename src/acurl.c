@@ -1,7 +1,7 @@
 #include "ae/ae.h"
 #include <curl/multi.h>
 #include <Python.h>
-
+#include "structmember.h"
 
 #define NO_ACTIVE_TIMER_ID -1
 #define MAX_COMPLETE_AT_ONCE 500
@@ -18,6 +18,7 @@ typedef struct {
     RequestData *ready_to_complete_list[MAX_COMPLETE_AT_ONCE];
     int ready_to_complete_len;
     PyObject *complete_py_callback;
+    int running_handles;
 } EventLoop;
 
 
@@ -36,6 +37,7 @@ struct RequestData{
     char *url;
     Session *session;
     CURL *curl;
+    PyObject *user_object;
     CURLcode result;
 };
 
@@ -44,9 +46,16 @@ static void
 RequestData_dealloc(RequestData *self)
 {
     Py_DECREF(self->session);
+    Py_DECREF(self->user_object);
     curl_easy_cleanup(self->curl);
     Py_TYPE(self)->tp_free((PyObject*)self);
 }
+
+
+static PyMemberDef RequestData_members[] = {
+    {"user_object", T_OBJECT_EX, offsetof(RequestData, user_object), READONLY, ""},
+    {NULL}
+};
 
 
 static PyTypeObject RequestDataType = {
@@ -78,7 +87,7 @@ static PyTypeObject RequestDataType = {
     0,                         /* tp_iter */
     0,                         /* tp_iternext */
     0,                         /* tp_methods */
-    0,                         /* tp_members */
+    RequestData_members,                         /* tp_members */
     0,                         /* tp_getset */
     0,                         /* tp_base */
     0,                         /* tp_dict */
@@ -91,10 +100,9 @@ static PyTypeObject RequestDataType = {
 };
 
 
-int EventLoop_alive(struct aeEventLoop *eventLoop, long long id, void *clientData)
-{
-    ////printf("EventLoop alive\n");
-    return 0;
+int alive(struct aeEventLoop *eventLoop, long long id, void *clientData) {
+    //printf("*** AE ALIVE\n");
+    return 1000;
 }
 
 
@@ -109,33 +117,35 @@ EventLoop_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
         if (self != NULL) {
             self->event_loop = aeCreateEventLoop(10000);
             self->complete_timer = NO_ACTIVE_TIMER_ID;
+            Py_INCREF(completion_callback);
             self->complete_py_callback = completion_callback;
         }
+        aeCreateTimeEvent(self->event_loop, 1000, alive, NULL, NULL);
     }
     return (PyObject *)self;
 }
 
 
 static void
-EventLoop_dealloc(PyObject *self)
+EventLoop_dealloc(EventLoop *self)
 {
-    aeDeleteEventLoop(((EventLoop*)self)->event_loop);
+    aeDeleteEventLoop(self->event_loop);
+    Py_XDECREF(self->complete_py_callback);
     Py_TYPE(self)->tp_free((PyObject*)self);
 }
 
 
 static PyObject *
-EventLoop_main(PyObject *self, PyObject *args)
+EventLoop_main(EventLoop *self, PyObject *args)
 {
-	((EventLoop*)self)->thread_state = PyEval_SaveThread();
+	self->thread_state = PyEval_SaveThread();
     //printf("EventLoop_main\n");
-    //if(aeCreateTimeEvent(((EventLoop*)self)->event_loop, 0, EventLoop_alive, NULL, NULL) == AE_ERR) {
-        //printf("EventLoop_main aeCreateTimeEvent failed\n");
-      //  exit(1);
-   //}
-	aeMain(((EventLoop*)self)->event_loop);
-    PyEval_RestoreThread(((EventLoop*)self)->thread_state);
-	Py_RETURN_NONE;
+    do {
+        aeProcessEvents(self->event_loop, AE_ALL_EVENTS | AE_DONT_WAIT); 
+    } while(self->running_handles > 0);
+    //printf("EventLoop_main End\n");
+    PyEval_RestoreThread(self->thread_state);
+    Py_RETURN_NONE;
 }
 
 
@@ -148,9 +158,15 @@ EventLoop_stop(PyObject *self, PyObject *args)
 
 
 static PyMethodDef EventLoop_methods[] = {
-    {"main", EventLoop_main, METH_VARARGS, "Run the event loop"},
+    {"main", (PyCFunction)EventLoop_main, METH_VARARGS, "Run the event loop"},
     {"stop", EventLoop_stop, METH_VARARGS, "Stop the event loop"},
     {NULL, NULL, 0, NULL}
+};
+
+
+static PyMemberDef EventLoop_members[] = {
+    {"_completion_callback", T_OBJECT_EX, offsetof(EventLoop, complete_py_callback), READONLY, "Called with a list of failed of successful requests, set via constructor"},
+    {NULL}
 };
 
 
@@ -159,7 +175,7 @@ static PyTypeObject EventLoopType = {
     "acurl.EventLoop",           /* tp_name */
     sizeof(EventLoop),           /* tp_basicsize */
     0,                         /* tp_itemsize */
-    EventLoop_dealloc,           /* tp_dealloc */
+    (destructor)EventLoop_dealloc,           /* tp_dealloc */
     0,                         /* tp_print */
     0,                         /* tp_getattr */
     0,                         /* tp_setattr */
@@ -183,7 +199,7 @@ static PyTypeObject EventLoopType = {
     0,                         /* tp_iter */
     0,                         /* tp_iternext */
     EventLoop_methods,         /* tp_methods */
-    0,                         /* tp_members */
+    EventLoop_members,         /* tp_members */
     0,                         /* tp_getset */
     0,                         /* tp_base */
     0,                         /* tp_dict */
@@ -207,7 +223,11 @@ void complete_py_callback(EventLoop *loop) {
         //PyObject *error_str = PyUnicode_FromString(curl_easy_strerror(request_data->result));
     }
     PyObject *args = PyTuple_Pack(1, list);
+
     PyObject_CallObject(loop->complete_py_callback, args);
+    //printf("Running handles complete_py_callback before %d\n", loop->running_handles);
+    loop->running_handles -= loop->ready_to_complete_len;
+    //printf("Running handles complete_py_callback after %d\n", loop->running_handles);
     loop->thread_state = PyEval_SaveThread();
     loop->ready_to_complete_len = 0;
 }
@@ -233,7 +253,6 @@ void response_complete(Session *session)
         if(msg == NULL) {
             break;
         }
-        //printf("completing %p\n", msg->easy_handle);
         curl_multi_remove_handle(session->multi, msg->easy_handle);
         curl_easy_getinfo(msg->easy_handle, CURLINFO_PRIVATE, (void **)&(session->loop->ready_to_complete_list[session->loop->ready_to_complete_len]));
         session->loop->ready_to_complete_list[session->loop->ready_to_complete_len]->result = msg->data.result;
@@ -254,6 +273,7 @@ void socket_action_and_response_complete(Session *session, curl_socket_t socket,
     //printf("socket_action_and_response_complete\n");
     int running_handles;
     curl_multi_socket_action(session->multi, socket, ev_bitmask, &running_handles);
+    //printf("socket_action_and_response_complete2 %d %d\n", running_handles, session->running_handles);
     if(running_handles < session->running_handles) {
         response_complete(session);
         session->running_handles = running_handles;
@@ -326,11 +346,16 @@ int timer_callback(CURLM *multi, long timeout_ms, void *userp)
         aeDeleteTimeEvent(SESSION_AE_LOOP(session), session->timer_id);
         session->timer_id = NO_ACTIVE_TIMER_ID;
     }
-    if(timeout_ms >= 0) {
+    if(timeout_ms > 0) {
         if((session->timer_id = aeCreateTimeEvent(SESSION_AE_LOOP(session), timeout_ms, timeout, userp, NULL)) == AE_ERR) {
             //printf("timer_callback failed\n");
             exit(1);
         }
+        //printf("timeout registered\n");
+    }
+    else if(timeout_ms == 0) {
+        //printf("timeout callback immediate\n");
+        socket_action_and_response_complete((Session*)userp, CURL_SOCKET_TIMEOUT, 0);
     }
     return 0;
 }
@@ -395,9 +420,8 @@ int do_request_start(struct aeEventLoop *eventLoop, long long id, void *clientDa
     curl_easy_setopt(curl, CURLOPT_PRIVATE, request_data);
     curl_easy_setopt(curl, CURLOPT_SHARE, request_data->session->shared);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-    curl_multi_add_handle(request_data->session->multi, curl);
     request_data->session->running_handles++;
-    //socket_action_and_response_complete(request_data->session, CURL_SOCKET_TIMEOUT, 0);
+    curl_multi_add_handle(request_data->session->multi, curl);
     //printf("DONE do_request_start %p\n", curl);
     return AE_NOMORE;
 }
@@ -406,17 +430,21 @@ int do_request_start(struct aeEventLoop *eventLoop, long long id, void *clientDa
 static PyObject *
 Session_request(PyObject *self, PyObject *args, PyObject *kwds)
 {
-    static char *kwlist[] = {"url", NULL};
+    static char *kwlist[] = {"url", "user_object", NULL};
     char *url;
+    PyObject *user_object;
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "s", kwlist, &url)) {
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "sO", kwlist, &url, &user_object)) {
         return NULL;
     }
     RequestData *request_data = PyObject_New(RequestData, (PyTypeObject *)&RequestDataType);
-    //RequestData *request_data = (RequestData*)RequestDataType.tp_alloc(&RequestDataType, 0);
     Py_INCREF(self);
     request_data->session = (Session *)self;
+    request_data->session->loop->running_handles++;
+    //printf("Running handles Session_request %d\n", request_data->session->loop->running_handles);
     request_data->url = strdup(url);
+    Py_INCREF(user_object);
+    request_data->user_object = user_object;
     aeCreateTimeEvent(SESSION_AE_LOOP(self), 0, do_request_start, request_data, NULL);
     Py_RETURN_NONE;
 }

@@ -6,6 +6,7 @@ import sys
 def complete(completed):
     global num
     num += len(completed)
+    print(completed[0].user_object)
 
 
 ev = _acurl.EventLoop(complete)
@@ -25,7 +26,7 @@ t1 = time.time()
 for j in range(P):
     session = _acurl.Session(ev)
     for i in range(N//P):
-        session.request('http://127.0.0.1:9003')
+        session.request('http://127.0.0.1:9003', 22)
 t2 = time.time()
 last_num = num
 thread.start()
