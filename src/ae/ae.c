@@ -463,3 +463,16 @@ char *aeGetApiName(void) {
 void aeSetBeforeSleepProc(aeEventLoop *eventLoop, aeBeforeSleepProc *beforesleep) {
     eventLoop->beforesleep = beforesleep;
 }
+
+int aeHasEvents(aeEventLoop *eventLoop) {
+    aeTimeEvent *te = eventLoop->timeEventHead;
+    int found_timed_Event = 0;
+    while(te) {
+        if(te->id != AE_DELETED_EVENT_ID) {
+            found_timed_Event = 1;
+            break;
+        }
+        te = te->next;
+    }
+    return eventLoop->maxfd != -1 && found_timed_Event;
+}

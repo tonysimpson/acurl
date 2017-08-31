@@ -86,6 +86,8 @@ typedef struct aeFiredEvent {
     int mask;
 } aeFiredEvent;
 
+
+
 /* State of an event based program */
 typedef struct aeEventLoop {
     int maxfd;   /* highest file descriptor currently registered */
@@ -119,5 +121,6 @@ char *aeGetApiName(void);
 void aeSetBeforeSleepProc(aeEventLoop *eventLoop, aeBeforeSleepProc *beforesleep);
 int aeGetSetSize(aeEventLoop *eventLoop);
 int aeResizeSetSize(aeEventLoop *eventLoop, int setsize);
+int aeHasEvents(aeEventLoop *eventLoop);
 
 #endif
