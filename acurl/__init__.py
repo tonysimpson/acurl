@@ -23,6 +23,7 @@ class EventLoop:
         self._running = False
 
     def start_thread_if_needed(self):
+        #print("start_thread_if_needed: running={}".format(self._running))
         if not self._running:
             self._running = True
             self._thread = threading.Thread(target=self._runner)
@@ -30,6 +31,7 @@ class EventLoop:
 
     def _runner(self):
         self._ae_loop.main()
+        #print("runner: ae loop finished")
         self._running = False
 
     def _scheduled_complete(self, completed):
@@ -41,7 +43,5 @@ class EventLoop:
 
     def session(self):
         return  Session(self._ae_loop, self._loop, self.start_thread_if_needed)
-
-
 
 
