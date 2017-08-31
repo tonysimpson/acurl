@@ -466,13 +466,13 @@ void aeSetBeforeSleepProc(aeEventLoop *eventLoop, aeBeforeSleepProc *beforesleep
 
 int aeHasEvents(aeEventLoop *eventLoop) {
     aeTimeEvent *te = eventLoop->timeEventHead;
-    int found_timed_Event = 0;
+    int found_timed_event = 0;
     while(te) {
         if(te->id != AE_DELETED_EVENT_ID) {
-            found_timed_Event = 1;
+            found_timed_event = 1;
             break;
         }
         te = te->next;
     }
-    return eventLoop->maxfd != -1 && found_timed_Event;
+    return found_timed_event || eventLoop->maxfd != -1;
 }
