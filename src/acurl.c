@@ -1,6 +1,7 @@
 #include "ae/ae.h"
 #include <curl/multi.h>
 #include <Python.h>
+#include <pthread.h>
 #include "structmember.h"
 
 #define NO_ACTIVE_TIMER_ID -1
@@ -19,6 +20,7 @@ typedef struct {
     int ready_to_complete_len;
     PyObject *complete_py_callback;
     int running_handles;
+    pthread_mutex_t lock;
 } EventLoop;
 
 
@@ -101,7 +103,7 @@ static PyTypeObject RequestDataType = {
 
 
 int alive(struct aeEventLoop *eventLoop, long long id, void *clientData) {
-    //printf("*** AE ALIVE\n");
+    //printf("*** AE ALIVE Still have events %d\n", aeHasEvents(eventLoop));
     return 1000;
 }
 
@@ -120,7 +122,7 @@ EventLoop_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
             Py_INCREF(completion_callback);
             self->complete_py_callback = completion_callback;
         }
-        aeCreateTimeEvent(self->event_loop, 1000, alive, NULL, NULL);
+        //aeCreateTimeEvent(self->event_loop, 1000, alive, NULL, NULL);
     }
     return (PyObject *)self;
 }
@@ -138,13 +140,18 @@ EventLoop_dealloc(EventLoop *self)
 static PyObject *
 EventLoop_main(EventLoop *self, PyObject *args)
 {
-	self->thread_state = PyEval_SaveThread();
-    //printf("EventLoop_main\n");
+    //printf("EventLoop_main: Started\n");
     do {
-        aeProcessEvents(self->event_loop, AE_ALL_EVENTS | AE_DONT_WAIT); 
+        self->thread_state = PyEval_SaveThread();
+        do {
+            pthread_mutex_lock(&self->lock);
+            aeProcessEvents(self->event_loop, AE_ALL_EVENTS | AE_DONT_WAIT); 
+            pthread_mutex_unlock(&self->lock);
+        } while(self->running_handles > 0);
+        PyEval_RestoreThread(self->thread_state);
+        //printf("EventLoop_main: Grabbed GIL; eventloop->running_handles=%d\n", self->running_handles);
     } while(self->running_handles > 0);
-    //printf("EventLoop_main End\n");
-    PyEval_RestoreThread(self->thread_state);
+    //printf("EventLoop_main: Ended; has_events=%d\n", aeHasEvents(self->event_loop));
     Py_RETURN_NONE;
 }
 
@@ -215,6 +222,7 @@ static PyTypeObject EventLoopType = {
 void complete_py_callback(EventLoop *loop) {
     int i;
     PyObject *list;
+    pthread_mutex_unlock(&loop->lock);
     PyEval_RestoreThread(loop->thread_state);
     list = PyList_New(loop->ready_to_complete_len);
     for(i = 0; i < loop->ready_to_complete_len; i++) {
@@ -225,10 +233,10 @@ void complete_py_callback(EventLoop *loop) {
     PyObject *args = PyTuple_Pack(1, list);
 
     PyObject_CallObject(loop->complete_py_callback, args);
-    //printf("Running handles complete_py_callback before %d\n", loop->running_handles);
     loop->running_handles -= loop->ready_to_complete_len;
-    //printf("Running handles complete_py_callback after %d\n", loop->running_handles);
+    //printf("complete_py_callback: new_event_loop_running_handles=%d number_event_loop_handles_removed=%d\n", loop->running_handles, loop->ready_to_complete_len);
     loop->thread_state = PyEval_SaveThread();
+    pthread_mutex_lock(&loop->lock);
     loop->ready_to_complete_len = 0;
 }
 
@@ -244,9 +252,6 @@ void response_complete(Session *session)
 {
     int remaining_in_queue;
     CURLMsg *msg;
-    if(session->loop->complete_timer == NO_ACTIVE_TIMER_ID) {
-        session->loop->complete_timer = aeCreateTimeEvent(SESSION_AE_LOOP(session), 0, complete_py_callback_timed, session->loop, NULL);
-    }
     while(1)
     {
         msg = curl_multi_info_read(session->multi, &remaining_in_queue);
@@ -258,22 +263,20 @@ void response_complete(Session *session)
         session->loop->ready_to_complete_list[session->loop->ready_to_complete_len]->result = msg->data.result;
         session->loop->ready_to_complete_len++;
         if(session->loop->ready_to_complete_len == MAX_COMPLETE_AT_ONCE) {
-            if(session->loop->complete_timer != NO_ACTIVE_TIMER_ID) {
-                aeDeleteTimeEvent(SESSION_AE_LOOP(session), session->loop->complete_timer);
-                session->loop->complete_timer = NO_ACTIVE_TIMER_ID;
-            }
             complete_py_callback(session->loop);
         }
+    }
+    if(session->loop->ready_to_complete_len > 0 && session->loop->complete_timer == NO_ACTIVE_TIMER_ID) {
+        session->loop->complete_timer = aeCreateTimeEvent(SESSION_AE_LOOP(session), 0, complete_py_callback_timed, session->loop, NULL);
     }
 }
 
 
 void socket_action_and_response_complete(Session *session, curl_socket_t socket, int ev_bitmask) 
 {
-    //printf("socket_action_and_response_complete\n");
     int running_handles;
     curl_multi_socket_action(session->multi, socket, ev_bitmask, &running_handles);
-    //printf("socket_action_and_response_complete2 %d %d\n", running_handles, session->running_handles);
+    //printf("socket_action_and_response_complete:  session_handles_before=%d session_handles_after=%d\n",session->running_handles, running_handles);
     if(running_handles < session->running_handles) {
         response_complete(session);
         session->running_handles = running_handles;
@@ -299,7 +302,7 @@ void socket_event(struct aeEventLoop *eventLoop, int fd, void *clientData, int m
 
 int socket_callback(CURL *easy, curl_socket_t s, int what, void *userp, void *socketp)
 {
-    //printf("socket_callback %p %d %d\n", easy, s, what);
+    //printf("socket_callback: handle=%p socket=%d what=%d\n", easy, s, what);
     int result = 10; //FIXME fake value because of CURL_POLL_REMOVE case
     switch(what) {
         case CURL_POLL_NONE:
@@ -340,9 +343,10 @@ int timeout(struct aeEventLoop *eventLoop, long long id, void *clientData)
 
 int timer_callback(CURLM *multi, long timeout_ms, void *userp)
 {
-    //printf("timeout_callback %ld\n", timeout_ms);
+    //printf("timeout_callback: timeout_ms=%ld\n", timeout_ms);
     Session *session = (Session*)userp;
     if(session->timer_id != NO_ACTIVE_TIMER_ID) {
+        //printf("timeout_callback: delete timer; session->timer_id=%ld\n", session->timer_id);
         aeDeleteTimeEvent(SESSION_AE_LOOP(session), session->timer_id);
         session->timer_id = NO_ACTIVE_TIMER_ID;
     }
@@ -351,10 +355,9 @@ int timer_callback(CURLM *multi, long timeout_ms, void *userp)
             //printf("timer_callback failed\n");
             exit(1);
         }
-        //printf("timeout registered\n");
+        //printf("timeout_callback: create timer; session->timer_id=%ld\n", session->timer_id);
     }
     else if(timeout_ms == 0) {
-        //printf("timeout callback immediate\n");
         socket_action_and_response_complete((Session*)userp, CURL_SOCKET_TIMEOUT, 0);
     }
     return 0;
@@ -411,7 +414,6 @@ size_t write_callback(char *ptr, size_t size, size_t nmemb, void *userdata) {
 
 int do_request_start(struct aeEventLoop *eventLoop, long long id, void *clientData)
 {
-    //printf("do_request_start\n");
     RequestData *request_data = (RequestData *)clientData;
     CURL *curl = request_data->curl = curl_easy_init();
     curl_easy_setopt(curl, CURLOPT_URL, request_data->url);
@@ -422,7 +424,8 @@ int do_request_start(struct aeEventLoop *eventLoop, long long id, void *clientDa
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     request_data->session->running_handles++;
     curl_multi_add_handle(request_data->session->multi, curl);
-    //printf("DONE do_request_start %p\n", curl);
+    //printf("do_request_start: added handle; session->running_handles=%d\n", request_data->session->running_handles);
+    socket_action_and_response_complete(request_data->session, CURL_SOCKET_TIMEOUT, 0);
     return AE_NOMORE;
 }
 
@@ -433,19 +436,23 @@ Session_request(PyObject *self, PyObject *args, PyObject *kwds)
     static char *kwlist[] = {"url", "user_object", NULL};
     char *url;
     PyObject *user_object;
+    Session *session = (Session *)self;
+    EventLoop *eventloop = session->loop;
 
     if (!PyArg_ParseTupleAndKeywords(args, kwds, "sO", kwlist, &url, &user_object)) {
         return NULL;
     }
     RequestData *request_data = PyObject_New(RequestData, (PyTypeObject *)&RequestDataType);
     Py_INCREF(self);
-    request_data->session = (Session *)self;
-    request_data->session->loop->running_handles++;
-    //printf("Running handles Session_request %d\n", request_data->session->loop->running_handles);
+    request_data->session = session;
     request_data->url = strdup(url);
     Py_INCREF(user_object);
     request_data->user_object = user_object;
+    pthread_mutex_lock(&eventloop->lock);
+    eventloop->running_handles++;
     aeCreateTimeEvent(SESSION_AE_LOOP(self), 0, do_request_start, request_data, NULL);
+    pthread_mutex_unlock(&eventloop->lock);
+    //printf("Session_request: scheduling request; eventloop->running_handles=%d\n", eventloop->running_handles);
     Py_RETURN_NONE;
 }
 
