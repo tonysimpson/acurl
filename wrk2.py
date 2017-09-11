@@ -23,6 +23,7 @@ async def group(number, duration):
     acurl_el = acurl.EventLoop()
     requests = duration_generator('http://localhost:9003', duration)
     results = await asyncio.gather(*[runner(acurl_el, requests) for i in range(number)])
+    acurl_el.stop()
     return sum(results)
 
 

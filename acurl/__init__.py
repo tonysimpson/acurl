@@ -4,23 +4,23 @@ import asyncio
 
 
 class Session:
-    def __init__(self, ae_loop, loop, ensure_running_func):
-        self._ensure_running_func = ensure_running_func
+    def __init__(self, ae_loop, loop):
         self._loop = loop
         self._session = _acurl.Session(ae_loop)
 
-    async def request(self, url, event_loop=None):
+    async def request(self, url):
         future = asyncio.futures.Future(loop=self._loop)
         self._session.request(url=url, user_object=future)
-        self._ensure_running_func()
         return await future
 
 
 class EventLoop:
     def __init__(self, loop=None):
         self._loop = loop if loop is not None else asyncio.get_event_loop()
-        self._ae_loop =  _acurl.EventLoop(self._complete)
+        self._ae_loop =  _acurl.EventLoop()
         self._running = False
+        self._loop.add_reader(self._ae_loop.get_out_fd(), self._complete)
+        self.start_thread_if_needed()
 
     def start_thread_if_needed(self):
         #print("start_thread_if_needed: running={}".format(self._running))
@@ -34,14 +34,18 @@ class EventLoop:
         #print("runner: ae loop finished")
         self._running = False
 
-    def _scheduled_complete(self, completed):
-        for complete in completed:
-            complete.user_object.set_result(1)
+    def stop(self):
+        if self._running:
+            self._ae_loop.stop()
 
-    def _complete(self, completed):
-        self._loop.call_soon_threadsafe(self._scheduled_complete, completed)
+    def __del__(self):
+        self.stop()
+
+    def _complete(self):
+        complete = self._ae_loop.get_completed_request()
+        complete.user_object.set_result(complete)
 
     def session(self):
-        return  Session(self._ae_loop, self._loop, self.start_thread_if_needed)
+        return  Session(self._ae_loop, self._loop)
 
 
