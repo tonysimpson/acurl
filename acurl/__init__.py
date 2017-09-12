@@ -42,8 +42,8 @@ class EventLoop:
         self.stop()
 
     def _complete(self):
-        complete = self._ae_loop.get_completed_request()
-        complete.user_object.set_result(complete)
+        error, response, future = self._ae_loop.get_completed()
+        future.set_result(response)
 
     def session(self):
         return  Session(self._ae_loop, self._loop)

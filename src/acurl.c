@@ -232,12 +232,14 @@ Eventloop_get_out_fd(PyObject *self, PyObject *args)
 
 
 static PyObject *
-Eventloop_get_completed_request(PyObject *self, PyObject *args)
+Eventloop_get_completed(PyObject *self, PyObject *args)
 {
     RequestData *request;
     int nread = read(((EventLoop*)self)->req_out_read, &request, sizeof(RequestData *));
     //printf("EventLoop_get_completed_request: read RequestData; read=%d address=%p\n", nread, request);
-    return (PyObject*)request;
+    PyObject *rtn = Py_BuildValue("iiO", 1, 0, request->user_object);
+    Py_DECREF(request);
+    return rtn;
 }
 
 
@@ -245,7 +247,7 @@ static PyMethodDef EventLoop_methods[] = {
     {"main", (PyCFunction)EventLoop_main, METH_NOARGS, "Run the event loop"},
     {"stop", EventLoop_stop, METH_NOARGS, "Stop the event loop"},
     {"get_out_fd", Eventloop_get_out_fd, METH_NOARGS, "Get the outbound file dscriptor"},
-    {"get_completed_request", Eventloop_get_completed_request, METH_NOARGS, "Get the outbound file dscriptor"},
+    {"get_completed", Eventloop_get_completed, METH_NOARGS, "Get the user_object, response and error"},
     {NULL, NULL, 0, NULL}
 };
 
