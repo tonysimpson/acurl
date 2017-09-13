@@ -13,8 +13,6 @@
 #define SESSION_AE_LOOP(session) (((Session*)session)->loop->event_loop)
 #define TIMER_ACTIVE(timer) (timer == NO_ACTIVE_TIMER_ID)
 
-typedef struct RequestData RequestData;
-
 
 typedef struct {
     PyObject_HEAD
@@ -37,14 +35,6 @@ typedef struct {
 } Session;
 
 
-struct RequestData{
-    PyObject_HEAD
-    char *url;
-    Session *session;
-    CURL *curl;
-    PyObject *user_object;
-    CURLcode result;
-};
 
 
 static void
@@ -55,54 +45,6 @@ RequestData_dealloc(RequestData *self)
     curl_easy_cleanup(self->curl);
     Py_TYPE(self)->tp_free((PyObject*)self);
 }
-
-
-static PyMemberDef RequestData_members[] = {
-    {"user_object", T_OBJECT_EX, offsetof(RequestData, user_object), READONLY, ""},
-    {NULL}
-};
-
-
-static PyTypeObject RequestDataType = {
-    PyVarObject_HEAD_INIT(NULL, 0)
-    "acurl.RequestData",           /* tp_name */
-    sizeof(RequestData),           /* tp_basicsize */
-    0,                         /* tp_itemsize */
-    (destructor)RequestData_dealloc,    /* tp_dealloc */
-    0,                         /* tp_print */
-    0,                         /* tp_getattr */
-    0,                         /* tp_setattr */
-    0,                         /* tp_reserved */
-    0,                         /* tp_repr */
-    0,                         /* tp_as_number */
-    0,                         /* tp_as_sequence */
-    0,                         /* tp_as_mapping */
-    0,                         /* tp_hash  */
-    0,                         /* tp_call */
-    0,                         /* tp_str */
-    0,                         /* tp_getattro */
-    0,                         /* tp_setattro */
-    0,                         /* tp_as_buffer */
-    Py_TPFLAGS_DEFAULT,        /* tp_flags */
-    "Request Data Type",       /* tp_doc */
-    0,                         /* tp_traverse */
-    0,                         /* tp_clear */
-    0,                         /* tp_richcompare */
-    0,                         /* tp_weaklistoffset */
-    0,                         /* tp_iter */
-    0,                         /* tp_iternext */
-    0,                         /* tp_methods */
-    RequestData_members,       /* tp_members */
-    0,                         /* tp_getset */
-    0,                         /* tp_base */
-    0,                         /* tp_dict */
-    0,                         /* tp_descr_get */
-    0,                         /* tp_descr_set */
-    0,                         /* tp_dictoffset */
-    0,                         /* tp_init */
-    0,                         /* tp_alloc */
-    0,                         /* tp_new */
-};
 
 
 void response_complete(Session *session) 
@@ -299,6 +241,76 @@ static PyTypeObject EventLoopType = {
 };
 
 
+typedef struct {
+    PyObject_HEAD
+} Headers;
+
+
+static PyMethodDef Headers_methods[] = {
+    {NULL, NULL, 0, NULL}
+};
+
+static PyMemberDef Headers_members[] = {
+    {NULL}
+};
+
+
+static PyObject *
+Headers_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
+{
+    Headers *self = (Headers *)type->tp_alloc(type, 0);
+    return (PyObject *)self;
+}
+
+
+static void
+Headers_dealloc(Headers *self)
+{
+    Py_TYPE(self)->tp_free((PyObject*)self);
+}
+
+
+static PyTypeObject HeadersType = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    "acurl.Headers",           /* tp_name */
+    sizeof(Headers),            /* tp_basicsize */
+    0,                         /* tp_itemsize */
+    (destructor)Headers_dealloc,/* tp_dealloc */
+    0,                         /* tp_print */
+    0,                         /* tp_getattr */
+    0,                         /* tp_setattr */
+    0,                         /* tp_reserved */
+    0,                         /* tp_repr */
+    0,                         /* tp_as_number */
+    0,                         /* tp_as_sequence */
+    0,                         /* tp_as_mapping */
+    0,                         /* tp_hash  */
+    0,                         /* tp_call */
+    0,                         /* tp_str */
+    0,                         /* tp_getattro */
+    0,                         /* tp_setattro */
+    0,                         /* tp_as_buffer */
+    Py_TPFLAGS_DEFAULT,        /* tp_flags */
+    "Headers Type",             /* tp_doc */
+    0,                         /* tp_traverse */
+    0,                         /* tp_clear */
+    0,                         /* tp_richcompare */
+    0,                         /* tp_weaklistoffset */
+    0,                         /* tp_iter */
+    0,                         /* tp_iternext */
+    Headers_methods,            /* tp_methods */
+    Headers_members,            /* tp_members */
+    0,                         /* tp_getset */
+    0,                         /* tp_base */
+    0,                         /* tp_dict */
+    0,                         /* tp_descr_get */
+    0,                         /* tp_descr_set */
+    0,                         /* tp_dictoffset */
+    0,                         /* tp_init */
+    0,                         /* tp_alloc */
+    Headers_new,                /* tp_new */
+};
+
 
 void socket_event(struct aeEventLoop *eventLoop, int fd, void *clientData, int mask)
 {
@@ -423,26 +435,53 @@ Session_dealloc(Session *self)
 }
 
 
+typedef struct {
+    char *method;
+    char *url;
+    char *cookies;
+
+    Session *session;
+    CURL *curl;
+    PyObject *future;
+} RequestStartData;
+
+
 
 static PyObject *
-Session_request(PyObject *self, PyObject *args, PyObject *kwds)
+Session_request(Session *self, PyObject *args, PyObject *kwds)
 {
-    static char *kwlist[] = {"url", "user_object", NULL};
+    static char *kwlist[] = {"future", "method", "url", "headers", "auth", "cookies", "data", NULL};
+    PyObject *future;
+    char *method;
     char *url;
-    PyObject *user_object;
+    PyObject *headers;
+    char *auth;
+    char *cookies;
+    Py_buffer *data;
     Session *session = (Session *)self;
-    EventLoop *eventloop = session->loop;
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "sO", kwlist, &url, &user_object)) {
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "OssO!zzz*", kwlist, &future, &method, &url, PyTuple_Type, &headers, &auth, &cookies, &data)) {
         return NULL;
     }
     RequestData *request_data = PyObject_New(RequestData, (PyTypeObject *)&RequestDataType);
     Py_INCREF(self);
     request_data->session = session;
+    Py_INCREF(future);
+    request_data->future = future;
+
+    request_data->method = strdup(method);
     request_data->url = strdup(url);
-    Py_INCREF(user_object);
-    request_data->user_object = user_object;
-    write(eventloop->req_in_write, &request_data, sizeof(RequestData *));
+
+    for(int i =0; i < PyTuple_GET_SIZE(headers); i++) {
+        request_data->headers = curl_slist_append(request_data->headers, PyUnicode_AsUTF8(PyTuple_GET_ITEM(headers, i)));
+    }
+    
+    request_data->auth = auth != NULL ? strdup(auth) : NULL;
+    request_data->cookies = cookies != NULL ? strdup(cookies) : NULL;
+
+    request_data->data = data;
+
+    write(self->loop->req_in_write, &request_data, sizeof(RequestData *));
     //printf("Session_request: scheduling request\n");
     Py_RETURN_NONE;
 }
@@ -524,7 +563,7 @@ PyInit__acurl(void)
     if (PyType_Ready(&EventLoopType) < 0)
         return NULL;
 
-    if (PyType_Ready(&RequestDataType) < 0)
+    if (PyType_Ready(&HeadersType) < 0)
         return NULL;
 
     m = PyModule_Create(&_acurl_module);
@@ -535,8 +574,8 @@ PyInit__acurl(void)
         PyModule_AddObject(m, "Session", (PyObject *)&SessionType);
         Py_INCREF(&EventLoopType);
         PyModule_AddObject(m, "EventLoop", (PyObject *)&EventLoopType);
-        Py_INCREF(&RequestDataType);
-        PyModule_AddObject(m, "RequestData", (PyObject *)&RequestDataType);
+        Py_INCREF(&HeadersType);
+        PyModule_AddObject(m, "Headers", (PyObject *)&HeadersType);
     }
     
     return m;
