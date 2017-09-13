@@ -35,22 +35,150 @@ typedef struct {
 } Session;
 
 
+typedef struct {
+    PyObject *future;
+    char *method;
+    char *url;
+    struct curl_slist *headers;
+    char *auth;
+    char *cookies;
+    Py_buffer *req_data;
+    Session *session;
+} AcRequestStart;
 
 
-static void
-RequestData_dealloc(RequestData *self)
+struct BufferNode {
+    int len;
+    char *buffer;
+    struct BufferNode *next;
+};
+
+
+typedef struct {
+    PyObject *future;
+    struct curl_slist *headers;
+    CURL *curl;
+    Session *session;
+    Py_buffer *req_data;
+    struct BufferNode *resp_buffer;
+} AcActiveRequest;
+
+
+typedef struct {
+    PyObject *future;
+    Session *session;
+    Py_buffer *req_data;
+    CURLcode result;
+    struct BufferNode *resp_buffer;
+} AcCompleteRequest;
+
+
+typedef struct {
+    PyObject_HEAD
+    struct BufferNode *resp_buffer;
+} Response;
+
+
+void free_buffer_nodes(struct BufferNode *start) {
+    struct BufferNode *node = start;
+    while(node != NULL)
+    {
+        struct BufferNode *next = node->next;
+        free(node->buffer);
+        free(node);
+        node = next;
+    };
+}
+
+
+static void Response_dealloc(Response *self)
 {
-    Py_DECREF(self->session);
-    Py_DECREF(self->user_object);
-    curl_easy_cleanup(self->curl);
+    free_buffer_nodes(self->resp_buffer);
     Py_TYPE(self)->tp_free((PyObject*)self);
 }
+
+
+static PyObject *
+Response_get_raw(Response *self, PyObject *args)
+{
+	int i = 0, len = 0;
+	PyObject* list;
+	struct BufferNode *node = self->resp_buffer;
+    while(node != NULL)
+    {
+		len++;
+        node = node->next;
+    };
+	list = PyList_New(len);
+	node = self->resp_buffer;
+    while(node != NULL)
+    {
+        i++;
+        PyList_SET_ITEM(list, len - i, PyBytes_FromStringAndSize(node->buffer, node->len));
+        node = node->next;
+    };
+    //printf("Response_get_raw\n");
+    return Py_BuildValue("O", list);
+}
+
+
+static PyMethodDef Response_methods[] = {
+    {"get_raw", (PyCFunction)Response_get_raw, METH_NOARGS, "Get the unprocessed response data"},
+    {NULL, NULL, 0, NULL}
+};
+
+
+static PyMemberDef Response_members[] = {
+    {NULL}
+};
+
+
+static PyTypeObject ResponseType = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    "_acurl.Response",           /* tp_name */
+    sizeof(Response),           /* tp_basicsize */
+    0,                         /* tp_itemsize */
+    (destructor)Response_dealloc,           /* tp_dealloc */
+    0,                         /* tp_print */
+    0,                         /* tp_getattr */
+    0,                         /* tp_setattr */
+    0,                         /* tp_reserved */
+    0,                         /* tp_repr */
+    0,                         /* tp_as_number */
+    0,                         /* tp_as_sequence */
+    0,                         /* tp_as_mapping */
+    0,                         /* tp_hash  */
+    0,                         /* tp_call */
+    0,                         /* tp_str */
+    0,                         /* tp_getattro */
+    0,                         /* tp_setattro */
+    0,                         /* tp_as_buffer */
+    Py_TPFLAGS_DEFAULT,        /* tp_flags */
+    "Response Type",           /* tp_doc */
+    0,                         /* tp_traverse */
+    0,                         /* tp_clear */
+    0,                         /* tp_richcompare */
+    0,                         /* tp_weaklistoffset */
+    0,                         /* tp_iter */
+    0,                         /* tp_iternext */
+    Response_methods,          /* tp_methods */
+    Response_members,          /* tp_members */
+    0,                         /* tp_getset */
+    0,                         /* tp_base */
+    0,                         /* tp_dict */
+    0,                         /* tp_descr_get */
+    0,                         /* tp_descr_set */
+    0,                         /* tp_dictoffset */
+    0,                         /* tp_init */
+    0,                         /* tp_alloc */
+    0,                         /* tp_new */
+};
 
 
 void response_complete(Session *session) 
 {
     int remaining_in_queue;
-    RequestData *request_data;
+    AcActiveRequest *ar;
     CURLMsg *msg;
     while(1)
     {
@@ -58,10 +186,20 @@ void response_complete(Session *session)
         if(msg == NULL) {
             break;
         }
-        curl_multi_remove_handle(session->multi, msg->easy_handle);
-        curl_easy_getinfo(msg->easy_handle, CURLINFO_PRIVATE, (void **)&request_data);
+        AcCompleteRequest *cr = (AcCompleteRequest*)malloc(sizeof(AcCompleteRequest));
+        curl_easy_getinfo(msg->easy_handle, CURLINFO_PRIVATE, (void **)&ar);
+        cr->result = msg->data.result;
+        cr->session = ar->session;
+        cr->future = ar->future;
+        cr->req_data = ar->req_data;
+        cr->resp_buffer = ar->resp_buffer;
+        curl_multi_remove_handle(ar->session->multi, ar->curl);
+        curl_easy_cleanup(ar->curl);
+        curl_slist_free_all(ar->headers);
+        free(ar);
+
         //printf("response_complete: writing to req_out_write\n");
-        int wrote = write(session->loop->req_out_write, &request_data, sizeof(RequestData *));
+        int wrote = write(session->loop->req_out_write, &cr, sizeof(AcCompleteRequest *));
         //printf("response_complete: done; wrote=%d\n", wrote);
     }
 }
@@ -77,30 +215,72 @@ void socket_action_and_response_complete(Session *session, curl_socket_t socket,
 
 
 size_t write_callback(char *ptr, size_t size, size_t nmemb, void *userdata) {
-    return size * nmemb;
+    if(size * nmemb == 0) {
+        return 0;
+    }
+    AcActiveRequest *ar = (AcActiveRequest *)userdata;
+    struct BufferNode *node = (struct BufferNode *)malloc(sizeof(struct BufferNode));
+    node->len = size * nmemb;
+    node->buffer = (char*)malloc(node->len);
+    memcpy(node->buffer, ptr, node->len);
+    node->next = ar->resp_buffer;
+    ar->resp_buffer = node;
+    return node->len;
 }
  
 
 void start_request(struct aeEventLoop *eventLoop, int fd, void *clientData, int mask)
 {
-    RequestData *request_data;
+    AcRequestStart *rs;
     EventLoop *loop = (EventLoop*)clientData;
-    read(loop->req_in_read, &request_data, sizeof(RequestData *));
-    if(request_data == NULL)
+    read(loop->req_in_read, &rs, sizeof(AcRequestStart *));
+    if(rs == NULL)
     {
         return;
     }
-    //printf("do_request_start: read request_data\n");
-    CURL *curl = request_data->curl = curl_easy_init();
-    curl_easy_setopt(curl, CURLOPT_URL, request_data->url);
-    free(request_data->url);
-    request_data->url = NULL;
-    curl_easy_setopt(curl, CURLOPT_PRIVATE, request_data);
-    curl_easy_setopt(curl, CURLOPT_SHARE, request_data->session->shared);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-    curl_multi_add_handle(request_data->session->multi, curl);
+    AcActiveRequest *ar = (AcActiveRequest*)malloc(sizeof(AcActiveRequest));
+    //printf("do_request_start: read AcRequestStart\n");
+    ar->curl = curl_easy_init();
+    curl_easy_setopt(ar->curl, CURLOPT_URL, rs->url);
+    curl_easy_setopt(ar->curl, CURLOPT_CUSTOMREQUEST, rs->method);
+    if(rs->headers != NULL) {
+        curl_easy_setopt(ar->curl, CURLOPT_HTTPHEADER, rs->headers);
+    }
+    if(rs->auth != NULL) {
+        curl_easy_setopt(ar->curl, CURLOPT_USERPWD, rs->auth);
+    }
+    if(rs->cookies != NULL) {
+        curl_easy_setopt(ar->curl, CURLOPT_COOKIE, rs->cookies);
+    }
+    if(rs->req_data != NULL) {
+        curl_easy_setopt(ar->curl, CURLOPT_POSTFIELDSIZE, rs->req_data->len);
+        curl_easy_setopt(ar->curl, CURLOPT_POSTFIELDS, (char*)rs->req_data->buf);
+    }
+    curl_easy_setopt(ar->curl, CURLOPT_PRIVATE, ar);
+    curl_easy_setopt(ar->curl, CURLOPT_SHARE, rs->session->shared);
+    curl_easy_setopt(ar->curl, CURLOPT_HEADER, 1L);
+    curl_easy_setopt(ar->curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(ar->curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(ar->curl, CURLOPT_WRITEDATA, ar);
+
+    ar->future = rs->future;
+    ar->headers = rs->headers;
+    ar->session = rs->session;
+    ar->req_data = rs->req_data;
+    ar->resp_buffer = NULL;
+    free(rs->method);
+    free(rs->url);
+    if(rs->auth != NULL) {
+        free(rs->auth);
+    }
+    if(rs->cookies != NULL) {
+        free(rs->cookies);
+    }
+    free(rs);
+        
+    curl_multi_add_handle(ar->session->multi, ar->curl);
     //printf("do_request_start: added handle\n");
-    socket_action_and_response_complete(request_data->session, CURL_SOCKET_TIMEOUT, 0);
+    socket_action_and_response_complete(ar->session, CURL_SOCKET_TIMEOUT, 0);
     return;
 }
 
@@ -176,11 +356,26 @@ Eventloop_get_out_fd(PyObject *self, PyObject *args)
 static PyObject *
 Eventloop_get_completed(PyObject *self, PyObject *args)
 {
-    RequestData *request;
-    int nread = read(((EventLoop*)self)->req_out_read, &request, sizeof(RequestData *));
+    AcCompleteRequest *cr;
+    PyObject *rtn;
+    int nread = read(((EventLoop*)self)->req_out_read, &cr, sizeof(AcCompleteRequest *));
     //printf("EventLoop_get_completed_request: read RequestData; read=%d address=%p\n", nread, request);
-    PyObject *rtn = Py_BuildValue("iiO", 1, 0, request->user_object);
-    Py_DECREF(request);
+    Py_XDECREF(cr->session);
+    if(cr->result == CURLE_OK) {
+        Response *response = PyObject_New(Response, (PyTypeObject *)&ResponseType);
+        response->resp_buffer = cr->resp_buffer;
+        rtn = Py_BuildValue("OOO", Py_None, response, cr->future);
+    }
+    else {
+        PyObject* error = PyUnicode_FromString(curl_easy_strerror(cr->result));
+        free_buffer_nodes(cr->resp_buffer);
+        rtn = Py_BuildValue("OOO", error, Py_None, cr->future);
+    }
+    Py_XDECREF(cr->future);
+    if(cr->req_data != NULL) {
+        PyBuffer_Release(cr->req_data);
+    }
+    free(cr);
     return rtn;
 }
 
@@ -238,77 +433,6 @@ static PyTypeObject EventLoopType = {
     0,                         /* tp_init */
     0,                         /* tp_alloc */
     EventLoop_new,             /* tp_new */
-};
-
-
-typedef struct {
-    PyObject_HEAD
-} Headers;
-
-
-static PyMethodDef Headers_methods[] = {
-    {NULL, NULL, 0, NULL}
-};
-
-static PyMemberDef Headers_members[] = {
-    {NULL}
-};
-
-
-static PyObject *
-Headers_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
-{
-    Headers *self = (Headers *)type->tp_alloc(type, 0);
-    return (PyObject *)self;
-}
-
-
-static void
-Headers_dealloc(Headers *self)
-{
-    Py_TYPE(self)->tp_free((PyObject*)self);
-}
-
-
-static PyTypeObject HeadersType = {
-    PyVarObject_HEAD_INIT(NULL, 0)
-    "acurl.Headers",           /* tp_name */
-    sizeof(Headers),            /* tp_basicsize */
-    0,                         /* tp_itemsize */
-    (destructor)Headers_dealloc,/* tp_dealloc */
-    0,                         /* tp_print */
-    0,                         /* tp_getattr */
-    0,                         /* tp_setattr */
-    0,                         /* tp_reserved */
-    0,                         /* tp_repr */
-    0,                         /* tp_as_number */
-    0,                         /* tp_as_sequence */
-    0,                         /* tp_as_mapping */
-    0,                         /* tp_hash  */
-    0,                         /* tp_call */
-    0,                         /* tp_str */
-    0,                         /* tp_getattro */
-    0,                         /* tp_setattro */
-    0,                         /* tp_as_buffer */
-    Py_TPFLAGS_DEFAULT,        /* tp_flags */
-    "Headers Type",             /* tp_doc */
-    0,                         /* tp_traverse */
-    0,                         /* tp_clear */
-    0,                         /* tp_richcompare */
-    0,                         /* tp_weaklistoffset */
-    0,                         /* tp_iter */
-    0,                         /* tp_iternext */
-    Headers_methods,            /* tp_methods */
-    Headers_members,            /* tp_members */
-    0,                         /* tp_getset */
-    0,                         /* tp_base */
-    0,                         /* tp_dict */
-    0,                         /* tp_descr_get */
-    0,                         /* tp_descr_set */
-    0,                         /* tp_dictoffset */
-    0,                         /* tp_init */
-    0,                         /* tp_alloc */
-    Headers_new,                /* tp_new */
 };
 
 
@@ -435,53 +559,44 @@ Session_dealloc(Session *self)
 }
 
 
-typedef struct {
-    char *method;
-    char *url;
-    char *cookies;
-
-    Session *session;
-    CURL *curl;
-    PyObject *future;
-} RequestStartData;
-
-
-
 static PyObject *
 Session_request(Session *self, PyObject *args, PyObject *kwds)
 {
-    static char *kwlist[] = {"future", "method", "url", "headers", "auth", "cookies", "data", NULL};
+    char a_pad[1024];
+    memset(a_pad, 0, 1024);
     PyObject *future;
     char *method;
     char *url;
     PyObject *headers;
     char *auth;
     char *cookies;
-    Py_buffer *data;
-    Session *session = (Session *)self;
+    Py_buffer *req_data = NULL;
+    static char *kwlist[] = {"future", "method", "url", "headers", "auth", "cookies", "data", NULL};
+    char b_pad[1024];
+    memset(b_pad, 0, 1024);
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "OssO!zzz*", kwlist, &future, &method, &url, PyTuple_Type, &headers, &auth, &cookies, &data)) {
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "OssO!zzz*", kwlist, &future, &method, &url, &PyTuple_Type, &headers, &auth, &cookies, &req_data)) {
         return NULL;
     }
-    RequestData *request_data = PyObject_New(RequestData, (PyTypeObject *)&RequestDataType);
+    AcRequestStart *rs = (AcRequestStart *)malloc(sizeof(AcRequestStart));
     Py_INCREF(self);
-    request_data->session = session;
+    rs->session = self;
     Py_INCREF(future);
-    request_data->future = future;
+    rs->future = future;
 
-    request_data->method = strdup(method);
-    request_data->url = strdup(url);
-
+    rs->method = strdup(method);
+    rs->url = strdup(url);
+    rs->headers = NULL;
     for(int i =0; i < PyTuple_GET_SIZE(headers); i++) {
-        request_data->headers = curl_slist_append(request_data->headers, PyUnicode_AsUTF8(PyTuple_GET_ITEM(headers, i)));
+        rs->headers = curl_slist_append(rs->headers, PyUnicode_AsUTF8(PyTuple_GET_ITEM(headers, i)));
     }
     
-    request_data->auth = auth != NULL ? strdup(auth) : NULL;
-    request_data->cookies = cookies != NULL ? strdup(cookies) : NULL;
+    rs->auth = auth != NULL ? strdup(auth) : NULL;
+    rs->cookies = cookies != NULL ? strdup(cookies) : NULL;
 
-    request_data->data = data;
+    rs->req_data = req_data;
 
-    write(self->loop->req_in_write, &request_data, sizeof(RequestData *));
+    write(self->loop->req_in_write, &rs, sizeof(AcRequestStart *));
     //printf("Session_request: scheduling request\n");
     Py_RETURN_NONE;
 }
@@ -563,7 +678,7 @@ PyInit__acurl(void)
     if (PyType_Ready(&EventLoopType) < 0)
         return NULL;
 
-    if (PyType_Ready(&HeadersType) < 0)
+    if (PyType_Ready(&ResponseType) < 0)
         return NULL;
 
     m = PyModule_Create(&_acurl_module);
@@ -574,8 +689,8 @@ PyInit__acurl(void)
         PyModule_AddObject(m, "Session", (PyObject *)&SessionType);
         Py_INCREF(&EventLoopType);
         PyModule_AddObject(m, "EventLoop", (PyObject *)&EventLoopType);
-        Py_INCREF(&HeadersType);
-        PyModule_AddObject(m, "Headers", (PyObject *)&HeadersType);
+        Py_INCREF(&ResponseType);
+        PyModule_AddObject(m, "Response", (PyObject *)&ResponseType);
     }
     
     return m;

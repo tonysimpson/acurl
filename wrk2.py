@@ -14,7 +14,7 @@ async def runner(acurl_el, requests):
     session = acurl_el.session()
     i = 0
     for request in requests:
-        await session.request(request)
+        await session.request('GET', request)
         i += 1
     return i
 

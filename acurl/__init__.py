@@ -3,14 +3,18 @@ import threading
 import asyncio
 
 
+class RequestError(Exception):
+    pass
+
+
 class Session:
     def __init__(self, ae_loop, loop):
         self._loop = loop
         self._session = _acurl.Session(ae_loop)
 
-    async def request(self, url):
+    async def request(self, method, url, headers=tuple(), cookies=None, auth=None, data=None):
         future = asyncio.futures.Future(loop=self._loop)
-        self._session.request(url=url, user_object=future)
+        self._session.request(future, method, url, headers=headers, cookies=cookies, auth=auth, data=data)
         return await future
 
 
@@ -43,7 +47,11 @@ class EventLoop:
 
     def _complete(self):
         error, response, future = self._ae_loop.get_completed()
-        future.set_result(response)
+        if error == None and response != None:
+            future.set_result(response)
+        elif error != None and response == None:
+            future.set_exception(RequestError(error))
+        
 
     def session(self):
         return  Session(self._ae_loop, self._loop)
