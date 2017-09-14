@@ -3,7 +3,7 @@ import asyncio
 
 el = acurl.EventLoop()
 s = el.session()
-r = asyncio.get_event_loop().run_until_complete(s.request('GET', 'http://google.com'))
+r = asyncio.get_event_loop().run_until_complete(s.request('POST', 'https://httpbin.org/post', data='fdafd'))
 print(r)
 print(b''.join(r.get_raw()).decode('utf8'))
 print(r.get_response_code())
