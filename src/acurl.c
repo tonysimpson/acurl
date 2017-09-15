@@ -54,14 +54,17 @@ typedef struct {
     Session* session;
     CURL *curl;
     CURLcode result;
-    struct BufferNode *resp_buffer_head;
-    struct BufferNode *resp_buffer_tail;
+    struct BufferNode *header_buffer_head;
+    struct BufferNode *header_buffer_tail;
+    struct BufferNode *body_buffer_head;
+    struct BufferNode *body_buffer_tail;
 } AcRequestData;
 
 
 typedef struct {
     PyObject_HEAD
-    struct BufferNode *resp_buffer;
+    struct BufferNode *header_buffer;
+    struct BufferNode *body_buffer;
     CURL *curl;
 } Response;
 
@@ -80,33 +83,49 @@ void free_buffer_nodes(struct BufferNode *start) {
 
 static void Response_dealloc(Response *self)
 {
-    free_buffer_nodes(self->resp_buffer);
+    free_buffer_nodes(self->header_buffer);
+    free_buffer_nodes(self->body_buffer);
     curl_easy_cleanup(self->curl);
     Py_TYPE(self)->tp_free((PyObject*)self);
 }
 
 
-static PyObject *
-Response_get_raw(Response *self, PyObject *args)
+PyObject * get_buffer_as_pylist(struct BufferNode *start) 
 {
-	int i = 0, len = 0;
-	PyObject* list;
-	struct BufferNode *node = self->resp_buffer;
+    int i = 0, len = 0;
+    PyObject* list;
+    struct BufferNode *node = start;
     while(node != NULL)
     {
-		len++;
+        len++;
         node = node->next;
     };
-	list = PyList_New(len);
-	node = self->resp_buffer;
+    list = PyList_New(len);
+    node = start;;
     while(node != NULL)
     {
         PyList_SET_ITEM(list, i++, PyBytes_FromStringAndSize(node->buffer, node->len));
         node = node->next;
     };
-    //printf("Response_get_raw\n");
     return Py_BuildValue("O", list);
 }
+
+
+static PyObject *
+Response_get_header(Response *self, PyObject *args)
+{
+    //printf("Response_get_header\n");
+    return get_buffer_as_pylist(self->header_buffer);
+}
+
+
+static PyObject *
+Response_get_body(Response *self, PyObject *args)
+{
+    //printf("Response_get_header\n");
+    return get_buffer_as_pylist(self->body_buffer);
+}
+
 
 static PyObject *Response_get_response_code(Response *self, PyObject *args)
 {
@@ -120,7 +139,7 @@ static PyObject *Response_get_redirect_url(Response *self, PyObject *args)
     char *url = NULL;
     curl_easy_getinfo(self->curl, CURLINFO_REDIRECT_URL, &url);
     if(url != NULL) {
-        return PyBytes_FromString(url);
+        return PyUnicode_FromString(url);
     }
     else {
         Py_RETURN_NONE;
@@ -131,7 +150,8 @@ static PyObject *Response_get_redirect_url(Response *self, PyObject *args)
 static PyMethodDef Response_methods[] = {
     {"get_redirect_url", (PyCFunction)Response_get_redirect_url, METH_NOARGS, "Get the redirect URL or None"},
     {"get_response_code", (PyCFunction)Response_get_response_code, METH_NOARGS, "Get the HTTP Response Code"},
-    {"get_raw", (PyCFunction)Response_get_raw, METH_NOARGS, "Get the unprocessed response data"},
+    {"get_header", (PyCFunction)Response_get_header, METH_NOARGS, "Get the header"},
+    {"get_body", (PyCFunction)Response_get_body, METH_NOARGS, "Get the body"},
     {NULL, NULL, 0, NULL}
 };
 
@@ -195,13 +215,14 @@ void response_complete(Session *session)
             break;
         }
         curl_easy_getinfo(msg->easy_handle, CURLINFO_PRIVATE, (void **)&rd);
-        rd->result = msg->data.result;
         curl_multi_remove_handle(rd->session->multi, rd->curl);
+        rd->result = msg->data.result;
         curl_slist_free_all(rd->headers);
         rd->headers = NULL;
         free(rd->req_data_buf);
         rd->req_data_buf = NULL;
         rd->req_data_len = 0;
+
         //printf("response_complete: writing to req_out_write\n");
         write(session->loop->req_out_write, &rd, sizeof(AcRequestData *));
     }
@@ -217,7 +238,7 @@ void socket_action_and_response_complete(Session *session, curl_socket_t socket,
 }
 
 
-size_t write_callback(char *ptr, size_t size, size_t nmemb, void *userdata) {
+size_t header_callback(char *ptr, size_t size, size_t nmemb, void *userdata) {
     if(size * nmemb == 0) {
         return 0;
     }
@@ -227,12 +248,32 @@ size_t write_callback(char *ptr, size_t size, size_t nmemb, void *userdata) {
     node->buffer = (char*)malloc(node->len);
     memcpy(node->buffer, ptr, node->len);
     node->next = NULL;
-    if(rd->resp_buffer_head == NULL) {
-        rd->resp_buffer_head = node;
-        rd->resp_buffer_tail = node;
+    if(rd->header_buffer_head == NULL) {
+        rd->header_buffer_head = node;
+        rd->header_buffer_tail = node;
     }
-    rd->resp_buffer_tail->next = node;
-    rd->resp_buffer_tail = node;
+    rd->header_buffer_tail->next = node;
+    rd->header_buffer_tail = node;
+    return node->len;
+}
+ 
+
+size_t body_callback(char *ptr, size_t size, size_t nmemb, void *userdata) {
+    if(size * nmemb == 0) {
+        return 0;
+    }
+    AcRequestData *rd = (AcRequestData *)userdata;
+    struct BufferNode *node = (struct BufferNode *)malloc(sizeof(struct BufferNode));
+    node->len = size * nmemb;
+    node->buffer = (char*)malloc(node->len);
+    memcpy(node->buffer, ptr, node->len);
+    node->next = NULL;
+    if(rd->body_buffer_head == NULL) {
+        rd->body_buffer_head = node;
+        rd->body_buffer_tail = node;
+    }
+    rd->body_buffer_tail->next = node;
+    rd->body_buffer_tail = node;
     return node->len;
 }
  
@@ -265,10 +306,11 @@ void start_request(struct aeEventLoop *eventLoop, int fd, void *clientData, int 
     }
     curl_easy_setopt(rd->curl, CURLOPT_PRIVATE, rd);
     curl_easy_setopt(rd->curl, CURLOPT_SHARE, rd->session->shared);
-    curl_easy_setopt(rd->curl, CURLOPT_HEADER, 1L);
     //curl_easy_setopt(rd->curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(rd->curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(rd->curl, CURLOPT_WRITEFUNCTION, body_callback);
     curl_easy_setopt(rd->curl, CURLOPT_WRITEDATA, rd);
+    curl_easy_setopt(rd->curl, CURLOPT_HEADERFUNCTION, header_callback);
+    curl_easy_setopt(rd->curl, CURLOPT_HEADERDATA, rd);
     free(rd->method);
     rd->method = NULL;
     free(rd->url);
@@ -362,18 +404,20 @@ Eventloop_get_completed(PyObject *self, PyObject *args)
     AcRequestData *rd;
     PyObject *rtn;
     read(((EventLoop*)self)->req_out_read, &rd, sizeof(AcRequestData *));
+    //printf("EventLoop_get_completed_request: read AcRequestData; address=%p\n", rd);
     Py_XDECREF(rd->session);
     Py_XINCREF(Py_None);
     if(rd->result == CURLE_OK) {
         Response *response = PyObject_New(Response, (PyTypeObject *)&ResponseType);
-        response->resp_buffer = rd->resp_buffer_head;
+        response->header_buffer = rd->header_buffer_head;
+        response->body_buffer = rd->body_buffer_head;
         response->curl = rd->curl;
-        //printf("EventLoop_get_completed_request: read AcRequestData; address=%p\n", request);
         rtn = Py_BuildValue("OOO", Py_None, response, rd->future);
     }
     else {
         PyObject* error = PyUnicode_FromString(curl_easy_strerror(rd->result));
-        free_buffer_nodes(rd->resp_buffer_head);
+        free_buffer_nodes(rd->header_buffer_head);
+        free_buffer_nodes(rd->body_buffer_head);
         curl_easy_cleanup(rd->curl);
         rtn = Py_BuildValue("OOO", error, Py_None, rd->future);
     }
