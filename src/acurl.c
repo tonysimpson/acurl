@@ -107,6 +107,7 @@ PyObject * get_buffer_as_pylist(struct BufferNode *start)
         PyList_SET_ITEM(list, i++, PyBytes_FromStringAndSize(node->buffer, node->len));
         node = node->next;
     };
+    //printf("get_buffer_as_pylist\n");
     return Py_BuildValue("O", list);
 }
 
@@ -122,7 +123,7 @@ Response_get_header(Response *self, PyObject *args)
 static PyObject *
 Response_get_body(Response *self, PyObject *args)
 {
-    //printf("Response_get_header\n");
+    //printf("Response_get_body\n");
     return get_buffer_as_pylist(self->body_buffer);
 }
 
@@ -250,9 +251,10 @@ size_t header_callback(char *ptr, size_t size, size_t nmemb, void *userdata) {
     node->next = NULL;
     if(rd->header_buffer_head == NULL) {
         rd->header_buffer_head = node;
-        rd->header_buffer_tail = node;
     }
-    rd->header_buffer_tail->next = node;
+    if(rd->header_buffer_tail != NULL) {
+        rd->header_buffer_tail->next = node;
+    }
     rd->header_buffer_tail = node;
     return node->len;
 }
@@ -270,9 +272,10 @@ size_t body_callback(char *ptr, size_t size, size_t nmemb, void *userdata) {
     node->next = NULL;
     if(rd->body_buffer_head == NULL) {
         rd->body_buffer_head = node;
-        rd->body_buffer_tail = node;
     }
-    rd->body_buffer_tail->next = node;
+    if(rd->body_buffer_tail != NULL) {
+        rd->body_buffer_tail->next = node;
+    }
     rd->body_buffer_tail = node;
     return node->len;
 }

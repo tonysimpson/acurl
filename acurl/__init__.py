@@ -16,6 +16,7 @@ class Response:
         self._text = None
         self._headers = None
         self._encoding = None
+        self._json = None
 
     @property
     def status_code(self):
