@@ -108,7 +108,7 @@ PyObject * get_buffer_as_pylist(struct BufferNode *start)
         node = node->next;
     };
     //printf("get_buffer_as_pylist\n");
-    return Py_BuildValue("O", list);
+    return list;
 }
 
 
@@ -128,29 +128,131 @@ Response_get_body(Response *self, PyObject *args)
 }
 
 
-static PyObject *Response_get_response_code(Response *self, PyObject *args)
+PyObject *resp_get_info_long(Response *self, CURLINFO info)
 {
-    long response_code;
-    curl_easy_getinfo(self->curl, CURLINFO_RESPONSE_CODE, &response_code);
-    return PyLong_FromLong(response_code);
+    long value;
+    curl_easy_getinfo(self->curl, info, &value);
+    return PyLong_FromLong(value);
 }
 
-static PyObject *Response_get_redirect_url(Response *self, PyObject *args)
+PyObject *resp_get_info_double(Response *self, CURLINFO info)
 {
-    char *url = NULL;
-    curl_easy_getinfo(self->curl, CURLINFO_REDIRECT_URL, &url);
-    if(url != NULL) {
-        return PyUnicode_FromString(url);
+    double value;
+    curl_easy_getinfo(self->curl, info, &value);
+    return PyFloat_FromDouble(value);
+}
+
+PyObject *resp_get_info_unicode(Response *self, CURLINFO info)
+{
+    char *value = NULL;
+    curl_easy_getinfo(self->curl, info, &value);
+    if(value != NULL) {
+        return PyUnicode_FromString(value);
     }
     else {
         Py_RETURN_NONE;
     }
 }
 
+static PyObject *Response_get_effective_url(Response *self, PyObject *args)
+{
+    return resp_get_info_unicode(self, CURLINFO_EFFECTIVE_URL);
+}
+
+static PyObject *Response_get_response_code(Response *self, PyObject *args)
+{
+    return resp_get_info_long(self, CURLINFO_RESPONSE_CODE);
+}
+
+static PyObject *Response_get_total_time(Response *self, PyObject *args)
+{
+    return resp_get_info_double(self, CURLINFO_TOTAL_TIME);
+}
+
+static PyObject *Response_get_namelookup_time(Response *self, PyObject *args)
+{
+    return resp_get_info_double(self, CURLINFO_NAMELOOKUP_TIME);
+}
+
+static PyObject *Response_get_connect_time(Response *self, PyObject *args)
+{
+    return resp_get_info_double(self, CURLINFO_CONNECT_TIME);
+}
+
+static PyObject *Response_get_appconnect_time(Response *self, PyObject *args)
+{
+    return resp_get_info_double(self, CURLINFO_APPCONNECT_TIME);
+}
+
+static PyObject *Response_get_pretransfer_time(Response *self, PyObject *args)
+{
+    return resp_get_info_double(self, CURLINFO_PRETRANSFER_TIME);
+}
+
+static PyObject *Response_get_starttransfer_time(Response *self, PyObject *args)
+{
+    return resp_get_info_double(self, CURLINFO_STARTTRANSFER_TIME);
+}
+
+static PyObject *Response_get_size_upload(Response *self, PyObject *args)
+{
+    return resp_get_info_double(self, CURLINFO_SIZE_UPLOAD);
+}
+
+static PyObject *Response_get_size_download(Response *self, PyObject *args)
+{
+    return resp_get_info_double(self, CURLINFO_SIZE_DOWNLOAD);
+}
+
+static PyObject *Response_get_primary_ip(Response *self, PyObject *args)
+{
+    return resp_get_info_unicode(self, CURLINFO_PRIMARY_IP);
+}
+
+static PyObject *Response_get_cookielist(Response *self, PyObject *args)
+{
+    struct curl_slist *start = NULL;
+    struct curl_slist *node = NULL;
+    int len = 0; int i = 0;
+    PyObject *list = NULL;
+    curl_easy_getinfo(self->curl, CURLINFO_COOKIELIST, &start);
+    node = start;
+    while(node != NULL) {
+        len++;
+        node = node->next;
+    }
+    list = PyList_New(len);
+    node = start;
+    while(node != NULL)
+    {
+        PyList_SET_ITEM(list, i++, PyUnicode_FromString(node->data));
+        node = node->next;
+    };
+    curl_slist_free_all(start);
+    return list;
+}
+
+static PyObject *Response_get_redirect_url(Response *self, PyObject *args)
+{
+    return resp_get_info_unicode(self, CURLINFO_REDIRECT_URL);
+}
+
+
 
 static PyMethodDef Response_methods[] = {
+    {"get_effective_url", (PyCFunction)Response_get_effective_url, METH_NOARGS, ""},
+    {"get_response_code", (PyCFunction)Response_get_response_code, METH_NOARGS, ""},
+    {"get_total_time", (PyCFunction)Response_get_total_time, METH_NOARGS, ""},
+    {"get_namelookup_time", (PyCFunction)Response_get_namelookup_time, METH_NOARGS, ""},
+    {"get_connect_time", (PyCFunction)Response_get_connect_time, METH_NOARGS, ""},
+    {"get_appconnect_time", (PyCFunction)Response_get_appconnect_time, METH_NOARGS, ""},
+    {"get_pretransfer_time", (PyCFunction)Response_get_pretransfer_time, METH_NOARGS, ""},
+    {"get_starttransfer_time", (PyCFunction)Response_get_starttransfer_time, METH_NOARGS, ""},
+    {"get_size_upload", (PyCFunction)Response_get_size_upload, METH_NOARGS, ""},
+    {"get_size_download", (PyCFunction)Response_get_size_download, METH_NOARGS, ""},
+    {"get_primary_ip", (PyCFunction)Response_get_primary_ip, METH_NOARGS, ""},
+    {"get_cookielist", (PyCFunction)Response_get_cookielist, METH_NOARGS, ""},
     {"get_redirect_url", (PyCFunction)Response_get_redirect_url, METH_NOARGS, "Get the redirect URL or None"},
-    {"get_response_code", (PyCFunction)Response_get_response_code, METH_NOARGS, "Get the HTTP Response Code"},
     {"get_header", (PyCFunction)Response_get_header, METH_NOARGS, "Get the header"},
     {"get_body", (PyCFunction)Response_get_body, METH_NOARGS, "Get the body"},
     {NULL, NULL, 0, NULL}

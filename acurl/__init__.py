@@ -2,10 +2,13 @@ import _acurl
 import threading
 import asyncio
 import ujson
-
+from collections import namedtuple
 
 class RequestError(Exception):
     pass
+
+
+Cookie = namedtuple('Cookie', 'domain flag path secure expiration name value'.split())
 
 
 class Response:
@@ -21,6 +24,55 @@ class Response:
     @property
     def status_code(self):
         return self._resp.get_response_code()
+    
+    @property 
+    def url(self):
+        return self._resp.get_effective_url()
+
+    @property
+    def total_time(self):
+        return self._resp.get_total_time()
+    
+    @property
+    def namelookup_time(self):
+        return self._resp.get_namelookup_time()
+
+    @property
+    def connect_time(self):
+        return self._resp.get_connect_time()
+
+    @property
+    def appconnect_time(self):
+        return self._resp.get_appconnect_time()
+
+    @property
+    def pretransfer_time(self):
+        return self._resp.get_pretransfer_time()
+
+    @property
+    def starttransfer_time(self):
+        return self._resp.get_starttransfer_time()
+
+    @property
+    def upload_size(self):
+        return self._resp.get_size_upload()
+
+    @property
+    def download_size(self):
+        return self._resp.get_size_download()
+
+    @property
+    def primary_ip(self):
+        return self._resp.get_primary_ip()
+
+    @property
+    def cookielist(self):
+        result = []
+        for line in self._resp.get_cookielist():
+            domain, flag, path, secure, expiration, name, value = line.split('\t')
+            result.append(Cookie(domain, bool(flag), path, bool(secure), int(expiration), name, value))
+        return result
+
 
     @property
     def history(self):
@@ -76,8 +128,38 @@ class Session:
         self._loop = loop
         self._session = _acurl.Session(ae_loop)
 
-    async def request(self, method, url, headers=tuple(), cookies=None, auth=None, data=None, max_redirects=5):
-        return await self._request(method, url, headers, cookies, auth, data, max_redirects)
+    async def get(self, url, **kwargs):
+        return await self.request('GET', url, **kwargs)
+
+    async def put(self, url, **kwargs):
+        return await self.request('PUT', url, **kwargs)
+
+    async def post(self, url, **kwargs):
+        return await self.request('POST', url, **kwargs)
+
+    async def delete(self, url, **kwargs):
+        return await self.request('DELETE', url, **kwargs)
+
+    async def head(self, url, **kwargs):
+        return await self.request('HEAD', url, **kwargs)
+
+    async def options(self, url, **kwargs):
+        return await self.request('OPTIONS', url, **kwargs)
+
+    async def request(self, method, url, headers=None, cookies=None, auth=None, data=None, json=None, max_redirects=5):
+        if headers is None:
+            headers = {}
+        if auth is not None:
+            username, password = auth
+            auth = ''.join([username, ':', password])
+        if json is not None:
+            if data is not None:
+                raise ValueError('use only one or none of data or json')
+            data = ujson.dumps(json)
+            if 'Content-Type' not in headers:
+                headers['Content-Type'] = 'application/json'
+        tuple_headers = tuple(headers.items())
+        return await self._request(method, url, tuple_headers, cookies, auth, data, max_redirects)
 
     async def _request(self, method, url, headers, cookies, auth, data, remaining_redirects):
         future = asyncio.futures.Future(loop=self._loop)
@@ -106,7 +188,7 @@ class EventLoop:
         #print("start_thread_if_needed: running={}".format(self._running))
         if not self._running:
             self._running = True
-            self._thread = threading.Thread(target=self._runner)
+            self._thread = threading.Thread(target=self._runner, daemon=True)
             self._thread.start()
 
     def _runner(self):
