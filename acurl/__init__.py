@@ -3,7 +3,7 @@ import threading
 import asyncio
 import ujson
 from collections import namedtuple
-
+import time
 
 class RequestError(Exception):
     pass
@@ -13,8 +13,9 @@ Cookie = namedtuple('Cookie', 'domain flag path secure expiration name value'.sp
 
 
 class Response:
-    def __init__(self, resp):
+    def __init__(self, resp, start_time):
         self._resp = resp
+        self._start_time = start_time
         self._prev = None
         self._body = None
         self._text = None
@@ -25,10 +26,16 @@ class Response:
     @property
     def status_code(self):
         return self._resp.get_response_code()
+
+    response_code = status_code
     
     @property 
     def url(self):
         return self._resp.get_effective_url()
+
+    @property
+    def start_time(self):
+        return self._start_time
 
     @property
     def total_time(self):
@@ -167,17 +174,19 @@ class Session:
 
     async def _request(self, method, url, headers, cookies, auth, data, remaining_redirects):
         future = asyncio.futures.Future(loop=self._loop)
+        start_time = time.time()
         self._session.request(future, method, url, headers=headers, cookies=cookies, auth=auth, data=data)
-        response = await future            
-        redirect_url = response.get_redirect_url()
+        _response = await future
+        redirect_url = _response.get_redirect_url()
+        response =  Response(_response, start_time)
         if redirect_url is not None:
             if remaining_redirects == 0:
                 raise RequestError('Max Redirects')
             redir_response = await self._request('GET', redirect_url, headers, cookies, auth, None, remaining_redirects - 1)
-            redir_response._prev = Response(response)
+            redir_response._prev = response
             return redir_response
         else:
-            return Response(response)
+            return response
 
 
 class EventLoop:
