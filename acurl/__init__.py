@@ -4,6 +4,7 @@ import asyncio
 import ujson
 from collections import namedtuple
 
+
 class RequestError(Exception):
     pass
 
@@ -73,6 +74,9 @@ class Response:
             result.append(Cookie(domain, bool(flag), path, bool(secure), int(expiration), name, value))
         return result
 
+    @property
+    def cookies(self):
+        return {c.name: c.value for c in self.cookielist}
 
     @property
     def history(self):
