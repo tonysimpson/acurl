@@ -12,8 +12,47 @@ class RequestError(Exception):
 Cookie = namedtuple('Cookie', 'domain flag path secure expiration name value'.split())
 
 
+class Request:
+    __slots__ = '_method _url _headers _cookies _auth _data'.split()
+
+    def __init__(self, method, url, headers, cookies, auth, data):
+        self._method = method
+        self._url = url
+        self._headers = headers
+        self._cookies = cookies
+        self._auth = auth
+        self._data = data
+
+    @property
+    def method(self):
+        return self._method
+
+    @property
+    def url(self):
+        return self._url
+
+    @property
+    def headers(self):
+        return dict(self._headers)
+
+    @property
+    def cookies(self):
+        return self._cookies
+
+    @property
+    def auth(self):
+        return self._auth.split(':',1)
+
+    @property
+    def data(self):
+        return self._data
+
+
 class Response:
-    def __init__(self, resp, start_time):
+    __slots__ = '_req _resp _start_time _prev _body _text _headers _encoding _json'.split()
+
+    def __init__(self, req, resp, start_time):
+        self._req = req
         self._resp = resp
         self._start_time = start_time
         self._prev = None
@@ -22,6 +61,10 @@ class Response:
         self._headers = None
         self._encoding = None
         self._json = None
+
+    @property
+    def request(self):
+        return self._req
 
     @property
     def status_code(self):
@@ -173,12 +216,13 @@ class Session:
         return await self._request(method, url, tuple_headers, cookies, auth, data, max_redirects)
 
     async def _request(self, method, url, headers, cookies, auth, data, remaining_redirects):
+        req = Request(method, url, headers, cookies, auth, data)
         future = asyncio.futures.Future(loop=self._loop)
         start_time = time.time()
         self._session.request(future, method, url, headers=headers, cookies=cookies, auth=auth, data=data)
         _response = await future
         redirect_url = _response.get_redirect_url()
-        response =  Response(_response, start_time)
+        response = Response(req, _response, start_time)
         if redirect_url is not None:
             if remaining_redirects == 0:
                 raise RequestError('Max Redirects')
