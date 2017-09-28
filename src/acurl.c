@@ -8,10 +8,7 @@
 #include "structmember.h"
 
 #define NO_ACTIVE_TIMER_ID -1
-#define MAX_COMPLETE_AT_ONCE 500
-#define MAX_START_AT_ONCE MAX_COMPLETE_AT_ONCE
 #define SESSION_AE_LOOP(session) (((Session*)session)->loop->event_loop)
-#define TIMER_ACTIVE(timer) (timer == NO_ACTIVE_TIMER_ID)
 
 
 typedef struct {
@@ -23,6 +20,10 @@ typedef struct {
     int req_in_write;
     int req_out_read;
     int req_out_write;
+    int stop_read;
+    int stop_write;
+    int curl_easy_cleanup_read;
+    int curl_easy_cleanup_write;
 } EventLoop;
 
 
@@ -65,6 +66,7 @@ typedef struct {
     PyObject_HEAD
     struct BufferNode *header_buffer;
     struct BufferNode *body_buffer;
+    Session *session;
     CURL *curl;
 } Response;
 
@@ -85,7 +87,9 @@ static void Response_dealloc(Response *self)
 {
     free_buffer_nodes(self->header_buffer);
     free_buffer_nodes(self->body_buffer);
-    curl_easy_cleanup(self->curl);
+    //printf("Response_dealloc %p\n", self->curl);
+    write(self->session->loop->curl_easy_cleanup_write, &self->curl, sizeof(CURL *));
+    Py_XDECREF(self->session);
     Py_TYPE(self)->tp_free((PyObject*)self);
 }
 
@@ -388,11 +392,8 @@ void start_request(struct aeEventLoop *eventLoop, int fd, void *clientData, int 
     AcRequestData *rd;
     EventLoop *loop = (EventLoop*)clientData;
     read(loop->req_in_read, &rd, sizeof(AcRequestData *));
-    if(rd == NULL)
-    {
-        return;
-    }
     //printf("do_request_start: read AcRequestData\n");
+    //printf("create\n");
     rd->curl = curl_easy_init();
     curl_easy_setopt(rd->curl, CURLOPT_URL, rd->url);
     curl_easy_setopt(rd->curl, CURLOPT_CUSTOMREQUEST, rd->method);
@@ -411,7 +412,6 @@ void start_request(struct aeEventLoop *eventLoop, int fd, void *clientData, int 
     }
     curl_easy_setopt(rd->curl, CURLOPT_PRIVATE, rd);
     curl_easy_setopt(rd->curl, CURLOPT_SHARE, rd->session->shared);
-    //curl_easy_setopt(rd->curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(rd->curl, CURLOPT_WRITEFUNCTION, body_callback);
     curl_easy_setopt(rd->curl, CURLOPT_WRITEDATA, rd);
     curl_easy_setopt(rd->curl, CURLOPT_HEADERFUNCTION, header_callback);
@@ -435,12 +435,33 @@ void start_request(struct aeEventLoop *eventLoop, int fd, void *clientData, int 
 }
 
 
+void stop_eventloop(struct aeEventLoop *eventLoop, int fd, void *clientData, int mask)
+{
+    char buffer[1];
+    EventLoop *loop = (EventLoop*)clientData;
+    read(loop->stop_read, buffer, sizeof(buffer));
+    loop->stop = true;
+}
+
+
+void curl_easy_cleanup_in_eventloop(struct aeEventLoop *eventLoop, int fd, void *clientData, int mask)
+{
+    CURL *curl;
+    int rbytes;
+    rbytes = read(fd, &curl, sizeof(CURL *));
+    //printf("destroy %p %d\n", curl, rbytes);
+    curl_easy_cleanup(curl);
+}
+
+
 static PyObject *
 EventLoop_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 {
     EventLoop *self = (EventLoop *)type->tp_alloc(type, 0);
     int req_in[2];
     int req_out[2];
+    int stop[2];
+    int curl_easy_cleanup[2];
     if (self != NULL) {
         self->event_loop = aeCreateEventLoop(10000);
         pipe(req_in);
@@ -449,7 +470,19 @@ EventLoop_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
         pipe(req_out);
         self->req_out_read = req_out[0];
         self->req_out_write = req_out[1];
+        pipe(stop);
+        self->stop_read = stop[0];
+        self->stop_write = stop[1];
+        pipe(curl_easy_cleanup);
+        self->curl_easy_cleanup_read = curl_easy_cleanup[0];
+        self->curl_easy_cleanup_write = curl_easy_cleanup[1];
         if(aeCreateFileEvent(self->event_loop, self->req_in_read, AE_READABLE, start_request, self) == AE_ERR) {
+            exit(1);
+        }
+        if(aeCreateFileEvent(self->event_loop, self->stop_read, AE_READABLE, stop_eventloop, self) == AE_ERR) {
+            exit(1);
+        }
+        if(aeCreateFileEvent(self->event_loop, self->curl_easy_cleanup_read, AE_READABLE, curl_easy_cleanup_in_eventloop, NULL) == AE_ERR) {
             exit(1);
         }
     }
@@ -465,6 +498,10 @@ EventLoop_dealloc(EventLoop *self)
     close(self->req_in_write);
     close(self->req_out_read);
     close(self->req_out_write);
+    close(self->stop_read);
+    close(self->stop_write);
+    close(self->curl_easy_cleanup_read);
+    close(self->curl_easy_cleanup_write);
     Py_TYPE(self)->tp_free((PyObject*)self);
 }
 
@@ -488,10 +525,7 @@ EventLoop_main(EventLoop *self, PyObject *args)
 static PyObject *
 EventLoop_stop(PyObject *self, PyObject *args)
 {
-    static void *null = NULL;
-    ((EventLoop*)self)->stop = true;
-    //printf("EventLoop_stop: writing stop to req_in_write\n");
-    write(((EventLoop*)self)->req_in_write, &null, sizeof(void *));
+    write(((EventLoop*)self)->stop_write, '\0', 1);
     Py_RETURN_NONE;
 }
 
@@ -510,23 +544,22 @@ Eventloop_get_completed(PyObject *self, PyObject *args)
     PyObject *rtn;
     read(((EventLoop*)self)->req_out_read, &rd, sizeof(AcRequestData *));
     //printf("EventLoop_get_completed_request: read AcRequestData; address=%p\n", rd);
-    Py_XDECREF(rd->session);
-    Py_XINCREF(Py_None);
     if(rd->result == CURLE_OK) {
         Response *response = PyObject_New(Response, (PyTypeObject *)&ResponseType);
         response->header_buffer = rd->header_buffer_head;
         response->body_buffer = rd->body_buffer_head;
         response->curl = rd->curl;
-        rtn = Py_BuildValue("OOO", Py_None, response, rd->future);
+        response->session = rd->session;
+        rtn = Py_BuildValue("ONN", Py_None, response, rd->future);
     }
     else {
         PyObject* error = PyUnicode_FromString(curl_easy_strerror(rd->result));
         free_buffer_nodes(rd->header_buffer_head);
         free_buffer_nodes(rd->body_buffer_head);
         curl_easy_cleanup(rd->curl);
-        rtn = Py_BuildValue("OOO", error, Py_None, rd->future);
+        Py_XDECREF(rd->session);
+        rtn = Py_BuildValue("NON", error, Py_None, rd->future);
     }
-    Py_XDECREF(rd->future);
     if(rd->req_data_buf != NULL) {
         free(rd->req_data_buf);
     }
@@ -833,6 +866,7 @@ static struct PyModuleDef _acurl_module = {
 PyMODINIT_FUNC
 PyInit__acurl(void)
 {
+    mtrace();
     PyObject* m;
     
     if (PyType_Ready(&SessionType) < 0)
