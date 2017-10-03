@@ -866,7 +866,6 @@ static struct PyModuleDef _acurl_module = {
 PyMODINIT_FUNC
 PyInit__acurl(void)
 {
-    mtrace();
     PyObject* m;
     
     if (PyType_Ready(&SessionType) < 0)
