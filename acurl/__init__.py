@@ -212,7 +212,7 @@ class Session:
             data = ujson.dumps(json)
             if 'Content-Type' not in headers:
                 headers['Content-Type'] = 'application/json'
-        tuple_headers = tuple(headers.items())
+        tuple_headers = tuple("{}: {}".format(name, value) for name, value in headers.items())
         return await self._request(method, url, tuple_headers, cookies, auth, data, max_redirects)
 
     async def _request(self, method, url, headers, cookies, auth, data, remaining_redirects):
