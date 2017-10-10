@@ -410,6 +410,8 @@ void start_request(struct aeEventLoop *eventLoop, int fd, void *clientData, int 
         curl_easy_setopt(rd->curl, CURLOPT_POSTFIELDSIZE, rd->req_data_len);
         curl_easy_setopt(rd->curl, CURLOPT_POSTFIELDS, (char*)rd->req_data_buf);
     }
+    curl_easy_setopt(rd->curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(rd->curl, CURLOPT_SSL_VERIFYHOST, 0L);
     curl_easy_setopt(rd->curl, CURLOPT_PRIVATE, rd);
     curl_easy_setopt(rd->curl, CURLOPT_SHARE, rd->session->shared);
     curl_easy_setopt(rd->curl, CURLOPT_WRITEFUNCTION, body_callback);

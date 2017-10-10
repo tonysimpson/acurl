@@ -49,7 +49,7 @@ class Request:
 
 
 class Response:
-    __slots__ = '_req _resp _start_time _prev _body _text _headers _encoding _json'.split()
+    __slots__ = '_req _resp _start_time _prev _body _text _header _headers_tuple _headers _encoding _json'.split()
 
     def __init__(self, req, resp, start_time):
         self._req = req
@@ -58,6 +58,8 @@ class Response:
         self._prev = None
         self._body = None
         self._text = None
+        self._header = None
+        self._headers_tuple = None
         self._headers = None
         self._encoding = None
         self._json = None
@@ -172,9 +174,19 @@ class Response:
     @property
     def headers(self):
         if self._headers is None:
-            raw_header = b''.join(self._resp.get_header()).decode('ascii')
-            self._headers = dict(l.split(': ', 1) for l in raw_header.split('\r\n')[1:-2])
+            self._headers = dict(self.headers_tuple)
         return self._headers
+    
+    @property
+    def headers_tuple(self):
+        if self._headers_tuple is None:
+            self._headers_tuple = tuple(tuple(l.split(': ', 1)) for l in self.header.split('\r\n')[1:-2])
+
+    @property
+    def header(self):
+        if self._header is None:
+            self._header = b''.join(self._resp.get_header()).decode('ascii')
+        return self._header
 
 
 class Session:
