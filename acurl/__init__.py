@@ -33,7 +33,7 @@ class Request:
 
     @property
     def headers(self):
-        return dict(self._headers)
+        return dict(header.split(' :', 1) for header in self._headers)
 
     @property
     def cookies(self):
