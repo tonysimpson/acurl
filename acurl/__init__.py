@@ -181,6 +181,7 @@ class Response:
     def headers_tuple(self):
         if self._headers_tuple is None:
             self._headers_tuple = tuple(tuple(l.split(': ', 1)) for l in self.header.split('\r\n')[1:-2])
+        return self._headers_tuple
 
     @property
     def header(self):
