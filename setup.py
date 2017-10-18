@@ -19,7 +19,7 @@ cpy_extension = Extension('_acurl',
                          )
 
 
-install_requires = []
+install_requires = ['ujson']
 
 
 setup(
