@@ -47,7 +47,9 @@ typedef struct {
     char* method;
     char* url;
     char* auth;
-    char* cookies;
+    PyObject* cookies;
+    int cookies_len;
+    char** cookies_str;
     PyObject* future;
     struct curl_slist* headers;
     int req_data_len;
@@ -59,6 +61,7 @@ typedef struct {
     struct BufferNode *header_buffer_tail;
     struct BufferNode *body_buffer_head;
     struct BufferNode *body_buffer_tail;
+    int dummy;
 } AcRequestData;
 
 
@@ -395,16 +398,19 @@ void start_request(struct aeEventLoop *eventLoop, int fd, void *clientData, int 
     //printf("do_request_start: read AcRequestData\n");
     //printf("create\n");
     rd->curl = curl_easy_init();
+    curl_easy_setopt(rd->curl, CURLOPT_SHARE, rd->session->shared);
     curl_easy_setopt(rd->curl, CURLOPT_URL, rd->url);
     curl_easy_setopt(rd->curl, CURLOPT_CUSTOMREQUEST, rd->method);
+    //curl_easy_setopt(rd->curl, CURLOPT_VERBOSE, 1L); //DEBUG
     if(rd->headers != NULL) {
         curl_easy_setopt(rd->curl, CURLOPT_HTTPHEADER, rd->headers);
     }
     if(rd->auth != NULL) {
-        curl_easy_setopt(rd->curl, CURLOPT_USERPWD,rd->auth);
+        curl_easy_setopt(rd->curl, CURLOPT_USERPWD, rd->auth);
     }
-    if(rd->cookies != NULL) {
-        curl_easy_setopt(rd->curl, CURLOPT_COOKIE, rd->cookies);
+    for(int i=0; i < rd->cookies_len; i++) {
+        //printf("start_request: set cookie [%s]\n", rd->cookies_str[i]);
+        curl_easy_setopt(rd->curl, CURLOPT_COOKIELIST, rd->cookies_str[i]);
     }
     if(rd->req_data_buf != NULL) {
         curl_easy_setopt(rd->curl, CURLOPT_POSTFIELDSIZE, rd->req_data_len);
@@ -413,7 +419,6 @@ void start_request(struct aeEventLoop *eventLoop, int fd, void *clientData, int 
     curl_easy_setopt(rd->curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(rd->curl, CURLOPT_SSL_VERIFYHOST, 0L);
     curl_easy_setopt(rd->curl, CURLOPT_PRIVATE, rd);
-    curl_easy_setopt(rd->curl, CURLOPT_SHARE, rd->session->shared);
     curl_easy_setopt(rd->curl, CURLOPT_WRITEFUNCTION, body_callback);
     curl_easy_setopt(rd->curl, CURLOPT_WRITEDATA, rd);
     curl_easy_setopt(rd->curl, CURLOPT_HEADERFUNCTION, header_callback);
@@ -426,13 +431,18 @@ void start_request(struct aeEventLoop *eventLoop, int fd, void *clientData, int 
         free(rd->auth);
         rd->auth = NULL;
     }
-    if(rd->cookies != NULL) {
-        free(rd->cookies);
-        rd->cookies = NULL;
+    free(rd->cookies_str);
+    if(rd->dummy) {
+        rd->result = CURLE_OK;
+        curl_slist_free_all(rd->headers);
+        free(rd->req_data_buf);
+        write(loop->req_out_write, &rd, sizeof(AcRequestData *));
     }
-    curl_multi_add_handle(rd->session->multi, rd->curl);
-    //printf("do_request_start: added handle\n");
-    socket_action_and_response_complete(rd->session, CURL_SOCKET_TIMEOUT, 0);
+    else {
+        curl_multi_add_handle(rd->session->multi, rd->curl);
+        //printf("do_request_start: added handle\n");
+        socket_action_and_response_complete(rd->session, CURL_SOCKET_TIMEOUT, 0);
+    }
     return;
 }
 
@@ -449,9 +459,8 @@ void stop_eventloop(struct aeEventLoop *eventLoop, int fd, void *clientData, int
 void curl_easy_cleanup_in_eventloop(struct aeEventLoop *eventLoop, int fd, void *clientData, int mask)
 {
     CURL *curl;
-    int rbytes;
-    rbytes = read(fd, &curl, sizeof(CURL *));
-    //printf("destroy %p %d\n", curl, rbytes);
+    read(fd, &curl, sizeof(CURL *));
+    //printf("destroy %p\n", curl);
     curl_easy_cleanup(curl);
 }
 
@@ -565,6 +574,7 @@ Eventloop_get_completed(PyObject *self, PyObject *args)
     if(rd->req_data_buf != NULL) {
         free(rd->req_data_buf);
     }
+    Py_XDECREF(rd->cookies);
     free(rd);
     return rtn;
 }
@@ -752,22 +762,19 @@ Session_dealloc(Session *self)
 static PyObject *
 Session_request(Session *self, PyObject *args, PyObject *kwds)
 {
-    char a_pad[1024];
-    memset(a_pad, 0, 1024);
     PyObject *future;
     char *method;
     char *url;
     PyObject *headers;
     char *auth;
-    char *cookies;
+    PyObject *cookies;
     int req_data_len = 0;
     char *req_data_buf = NULL;
+    int dummy;
     
-    static char *kwlist[] = {"future", "method", "url", "headers", "auth", "cookies", "data", NULL};
-    char b_pad[1024];
-    memset(b_pad, 0, 1024);
+    static char *kwlist[] = {"future", "method", "url", "headers", "auth", "cookies", "data", "dummy", NULL};
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "OssO!zzz#", kwlist, &future, &method, &url, &PyTuple_Type, &headers, &auth, &cookies, &req_data_buf, &req_data_len)) {
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "OssO!zO!z#p", kwlist, &future, &method, &url, &PyTuple_Type, &headers, &auth, &PyTuple_Type, &cookies, &req_data_buf, &req_data_len, &dummy)) {
         return NULL;
     }
     AcRequestData *rd = (AcRequestData *)malloc(sizeof(AcRequestData));
@@ -784,12 +791,24 @@ Session_request(Session *self, PyObject *args, PyObject *kwds)
     }
 
     rd->headers = NULL;
-    for(int i =0; i < PyTuple_GET_SIZE(headers); i++) {
+    for(int i=0; i < PyTuple_GET_SIZE(headers); i++) {
+        //curl_slist_append copies the string
         rd->headers = curl_slist_append(rd->headers, PyUnicode_AsUTF8(PyTuple_GET_ITEM(headers, i)));
     }
     
+    Py_INCREF(cookies);
+    rd->cookies = cookies;
+    rd->cookies_len = PyTuple_GET_SIZE(cookies);
+    if(rd->cookies_len > 0) {
+        rd->cookies_str = (char**)calloc(PyTuple_GET_SIZE(cookies), sizeof(char*));
+        for(int i=0; i < PyTuple_GET_SIZE(cookies); i++) {
+            rd->cookies_str[i] = PyUnicode_AsUTF8(PyTuple_GET_ITEM(cookies, i));
+        }
+    } else {
+        rd->cookies_str = NULL;
+    }
+    
     rd->auth = auth != NULL ? strdup(auth) : NULL;
-    rd->cookies = cookies != NULL ? strdup(cookies) : NULL;
 
     rd->req_data_len = req_data_len;
     rd->req_data_buf = req_data_buf;

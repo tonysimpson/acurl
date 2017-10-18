@@ -4,22 +4,119 @@ import asyncio
 import ujson
 from collections import namedtuple
 import time
+from urllib.parse import urlparse
 
 class RequestError(Exception):
     pass
 
 
-Cookie = namedtuple('Cookie', 'domain flag path secure expiration name value'.split())
+_FALSE_TRUE = ['FALSE', 'TRUE']
+
+
+class Cookie:
+    __slots__ = '_http_only _domain _include_subdomains _path _is_secure _expiration _name _value'.split()
+
+    def __init__(self, http_only, domain, include_subdomains, path, is_secure, expiration, name, value):
+        self._http_only = http_only
+        self._domain = domain
+        self._include_subdomains = include_subdomains
+        self._path = path
+        self._is_secure = is_secure
+        self._expiration = expiration
+        self._name = name
+        self._value = value
+
+    @property
+    def http_only(self):
+        return self._http_only
+
+    @property
+    def domain(self):
+        return self._domain
+
+    @property
+    def include_subdomains(self):
+        return self._include_subdomains
+
+    @property
+    def path(self):
+        return self._path
+
+    @property
+    def is_secure(self):
+        return self._is_secure
+
+    @property
+    def expiration(self):
+        return self._expiration
+    
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def value(self):
+        return self._value
+
+    @property
+    def has_expired(self):
+        return self.expiration != 0 or time.time() > self.expiration
+
+    def format(self):
+        bits = []
+        if self.http_only:
+            bits.append('#HttpOnly_')
+        bits.append(self.domain)
+        bits.append('\t')
+        bits.append(_FALSE_TRUE[self.include_subdomains])
+        bits.append('\t')
+        bits.append(self.path)
+        bits.append('\t')
+        bits.append(_FALSE_TRUE[self.is_secure])
+        bits.append('\t')
+        bits.append(str(self.expiration))
+        bits.append('\t')
+        bits.append(self.name)
+        bits.append('\t')
+        bits.append(self.value)
+        return ''.join(bits)
+
+
+def parse_cookie_string(cookie_string):
+    cookie_string = cookie_string.strip()
+    if cookie_string.startswith('#HttpOnly_'):
+        http_only = True
+        cookie_string = cookie_string[10:]
+    else:
+        http_only = False
+    domain, include_subdomains, path, is_secure, expiration, name, value = cookie_string.split('\t')
+    return Cookie(http_only, domain, include_subdomains == 'TRUE', path, is_secure == 'TRUE', int(expiration), name, value)
+
+
+def parse_cookie_list_string(cookie_list_string):
+    return [parse_cookie_string(line) for line in cookie_list_string.splitlines() if line.strip()]
+
+
+def session_cookie_for_url(url, name, value, http_only=False, include_subdomains=True, is_secure=False, include_url_path=False):
+    scheme, netloc, path, params, query, fragment = urlparse(url)
+    if not include_url_path:
+        path = '/'
+    #TODO do we need to sanitize netloc for IP and ports?
+    return Cookie(http_only, '.' + netloc, include_subdomains, path, is_secure, 0, name, value)
+
+
+def _cookie_list_to_cookie_dict(cookie_list):
+    return {cookie.name: cookie.value for cookie in cookie_list}
 
 
 class Request:
-    __slots__ = '_method _url _headers _cookies _auth _data'.split()
+    __slots__ = '_method _url _headers _cookie_list _auth _data'.split()
 
-    def __init__(self, method, url, headers, cookies, auth, data):
+    def __init__(self, method, url, headers, cookie_list, auth, data):
         self._method = method
         self._url = url
         self._headers = headers
-        self._cookies = cookies
+        self._cookie_list = cookie_list
         self._auth = auth
         self._data = data
 
@@ -34,10 +131,14 @@ class Request:
     @property
     def headers(self):
         return dict(header.split(': ', 1) for header in self._headers)
+    
+    @property
+    def cookie_list(self):
+        return self._cookie_list
 
     @property
     def cookies(self):
-        return self._cookies
+        return _cookie_list_to_cookie_dict(self.cookie_list)
 
     @property
     def auth(self):
@@ -120,15 +221,11 @@ class Response:
 
     @property
     def cookielist(self):
-        result = []
-        for line in self._resp.get_cookielist():
-            domain, flag, path, secure, expiration, name, value = line.split('\t')
-            result.append(Cookie(domain, bool(flag), path, bool(secure), int(expiration), name, value))
-        return result
+        return [parse_cookie_string(cookie) for cookie in self._resp.get_cookielist()]
 
     @property
     def cookies(self):
-        return {c.name: c.value for c in self.cookielist}
+        return _cookie_list_to_cookie_dict(self.cookielist)
 
     @property
     def history(self):
@@ -213,7 +310,7 @@ class Session:
     async def options(self, url, **kwargs):
         return await self.request('OPTIONS', url, **kwargs)
 
-    async def request(self, method, url, headers=None, cookies=None, auth=None, data=None, json=None, max_redirects=5):
+    async def request(self, method, url, headers=None, cookies=None, cookie_list=None, auth=None, data=None, json=None, allow_redirects=True, max_redirects=5):
         if headers is None:
             headers = {}
         if auth is not None:
@@ -226,20 +323,28 @@ class Session:
             if 'Content-Type' not in headers:
                 headers['Content-Type'] = 'application/json'
         tuple_headers = tuple("{}: {}".format(name, value) for name, value in headers.items())
-        return await self._request(method, url, tuple_headers, cookies, auth, data, max_redirects)
+        if cookie_list is None:
+            cookie_list = []
+        else:
+            cookie_list = list(cookie_list)
+        if cookies is not None:
+            for k, v in cookies.items():
+                cookie_list.append(session_cookie_for_url(url, k, v))
+        return await self._request(method, url, tuple_headers, tuple(cookie_list), auth, data, allow_redirects, max_redirects)
 
-    async def _request(self, method, url, headers, cookies, auth, data, remaining_redirects):
-        req = Request(method, url, headers, cookies, auth, data)
+    async def _request(self, method, url, headers, cookie_list, auth, data, allow_redirects, remaining_redirects):
+        req = Request(method, url, headers, cookie_list, auth, data)
         future = asyncio.futures.Future(loop=self._loop)
         start_time = time.time()
-        self._session.request(future, method, url, headers=headers, cookies=cookies, auth=auth, data=data)
+        cookies = tuple(c.format() for c in cookie_list)
+        self._session.request(future, method, url, headers=headers, cookies=cookies, auth=auth, data=data, dummy=False)
         _response = await future
         redirect_url = _response.get_redirect_url()
         response = Response(req, _response, start_time)
-        if redirect_url is not None:
+        if allow_redirects and redirect_url is not None:
             if remaining_redirects == 0:
                 raise RequestError('Max Redirects')
-            redir_response = await self._request('GET', redirect_url, headers, cookies, auth, None, remaining_redirects - 1)
+            redir_response = await self._request('GET', redirect_url, headers, tuple(), auth, None, True, remaining_redirects - 1)
             redir_response._prev = response
             return redir_response
         else:
