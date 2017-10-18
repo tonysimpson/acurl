@@ -180,6 +180,10 @@ class Response:
         return self._resp.get_effective_url()
 
     @property
+    def redirect_url(self):
+        return self._resp.get_redirect_url()
+
+    @property
     def start_time(self):
         return self._start_time
 
