@@ -10,6 +10,16 @@
 #define NO_ACTIVE_TIMER_ID -1
 #define SESSION_AE_LOOP(session) (((Session*)session)->loop->event_loop)
 
+#define DEBUG 0
+
+#if defined(DEBUG) && DEBUG > 0
+#include <sys/syscall.h>
+ #define DEBUG_PRINT(fmt, args...) fprintf(stderr, "DEBUG: %s:%d:%s() tid=%ld: " fmt "\n", \
+    __FILE__, __LINE__, __func__, (long)syscall(SYS_gettid), ##args)
+#else
+ #define DEBUG_PRINT(fmt, args...) /* Don't do anything in release builds */
+#endif
+
 
 typedef struct {
     PyObject_HEAD
@@ -88,9 +98,9 @@ void free_buffer_nodes(struct BufferNode *start) {
 
 static void Response_dealloc(Response *self)
 {
+    DEBUG_PRINT("response=%p", self);
     free_buffer_nodes(self->header_buffer);
     free_buffer_nodes(self->body_buffer);
-    //printf("Response_dealloc %p\n", self->curl);
     write(self->session->loop->curl_easy_cleanup_write, &self->curl, sizeof(CURL *));
     Py_XDECREF(self->session);
     Py_TYPE(self)->tp_free((PyObject*)self);
@@ -114,7 +124,7 @@ PyObject * get_buffer_as_pylist(struct BufferNode *start)
         PyList_SET_ITEM(list, i++, PyBytes_FromStringAndSize(node->buffer, node->len));
         node = node->next;
     };
-    //printf("get_buffer_as_pylist\n");
+    DEBUG_PRINT("list=%p", list);
     return list;
 }
 
@@ -122,7 +132,7 @@ PyObject * get_buffer_as_pylist(struct BufferNode *start)
 static PyObject *
 Response_get_header(Response *self, PyObject *args)
 {
-    //printf("Response_get_header\n");
+    DEBUG_PRINT("");
     return get_buffer_as_pylist(self->header_buffer);
 }
 
@@ -130,7 +140,7 @@ Response_get_header(Response *self, PyObject *args)
 static PyObject *
 Response_get_body(Response *self, PyObject *args)
 {
-    //printf("Response_get_body\n");
+    DEBUG_PRINT("");
     return get_buffer_as_pylist(self->body_buffer);
 }
 
@@ -315,11 +325,13 @@ static PyTypeObject ResponseType = {
 
 void response_complete(Session *session) 
 {
-    int remaining_in_queue;
+    DEBUG_PRINT("session=%p", session);
+    int remaining_in_queue = 1;
     AcRequestData *rd;
     CURLMsg *msg;
-    while(1)
+    while(remaining_in_queue > 0) 
     {
+        DEBUG_PRINT("calling curl_multi_info_read");
         msg = curl_multi_info_read(session->multi, &remaining_in_queue);
         if(msg == NULL) {
             break;
@@ -333,7 +345,7 @@ void response_complete(Session *session)
         rd->req_data_buf = NULL;
         rd->req_data_len = 0;
 
-        //printf("response_complete: writing to req_out_write\n");
+        DEBUG_PRINT("writing to req_out_write");
         write(session->loop->req_out_write, &rd, sizeof(AcRequestData *));
     }
 }
@@ -341,9 +353,10 @@ void response_complete(Session *session)
 
 void socket_action_and_response_complete(Session *session, curl_socket_t socket, int ev_bitmask) 
 {
+    DEBUG_PRINT("session=%p socket=%d ev_bitmask=%d", session, socket, ev_bitmask);
     int running_handles;
     curl_multi_socket_action(session->multi, socket, ev_bitmask, &running_handles);
-    //printf("socket_action_and_response_complete:  session_handles_after=%d\n", running_handles);
+    DEBUG_PRINT("session_handles_after=%d", running_handles);
     response_complete(session);
 }
 
@@ -395,8 +408,7 @@ void start_request(struct aeEventLoop *eventLoop, int fd, void *clientData, int 
     AcRequestData *rd;
     EventLoop *loop = (EventLoop*)clientData;
     read(loop->req_in_read, &rd, sizeof(AcRequestData *));
-    //printf("do_request_start: read AcRequestData\n");
-    //printf("create\n");
+    DEBUG_PRINT("read AcRequestData");
     rd->curl = curl_easy_init();
     curl_easy_setopt(rd->curl, CURLOPT_SHARE, rd->session->shared);
     curl_easy_setopt(rd->curl, CURLOPT_URL, rd->url);
@@ -409,7 +421,7 @@ void start_request(struct aeEventLoop *eventLoop, int fd, void *clientData, int 
         curl_easy_setopt(rd->curl, CURLOPT_USERPWD, rd->auth);
     }
     for(int i=0; i < rd->cookies_len; i++) {
-        //printf("start_request: set cookie [%s]\n", rd->cookies_str[i]);
+        DEBUG_PRINT("set cookie [%s]", rd->cookies_str[i]);
         curl_easy_setopt(rd->curl, CURLOPT_COOKIELIST, rd->cookies_str[i]);
     }
     if(rd->req_data_buf != NULL) {
@@ -440,7 +452,7 @@ void start_request(struct aeEventLoop *eventLoop, int fd, void *clientData, int 
     }
     else {
         curl_multi_add_handle(rd->session->multi, rd->curl);
-        //printf("do_request_start: added handle\n");
+        DEBUG_PRINT("added handle");
         socket_action_and_response_complete(rd->session, CURL_SOCKET_TIMEOUT, 0);
     }
     return;
@@ -460,7 +472,7 @@ void curl_easy_cleanup_in_eventloop(struct aeEventLoop *eventLoop, int fd, void 
 {
     CURL *curl;
     read(fd, &curl, sizeof(CURL *));
-    //printf("destroy %p\n", curl);
+    DEBUG_PRINT("curl=%p", curl);
     curl_easy_cleanup(curl);
 }
 
@@ -504,6 +516,7 @@ EventLoop_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 static void
 EventLoop_dealloc(EventLoop *self)
 {
+    DEBUG_PRINT("response=%p", self);
     aeDeleteEventLoop(self->event_loop);
     close(self->req_in_read);
     close(self->req_in_write);
@@ -520,15 +533,15 @@ EventLoop_dealloc(EventLoop *self)
 static PyObject *
 EventLoop_main(EventLoop *self, PyObject *args)
 {
-    //printf("EventLoop_main: Started\n");
+    DEBUG_PRINT("Started");
     self->thread_state = PyEval_SaveThread();
     do {
-        //printf("EventLoop_main: Start of aeProcessEvents; has_events=%d\n", aeHasEvents(self->event_loop));
+        DEBUG_PRINT("Start of aeProcessEvents");
         aeProcessEvents(self->event_loop, AE_ALL_EVENTS);
-        //printf("EventLoop_main: End of aeProcessEvents; has_events=%d\n", aeHasEvents(self->event_loop));
+        DEBUG_PRINT("End of aeProcessEvents");
     } while(!self->stop);
     PyEval_RestoreThread(self->thread_state);
-    //printf("EventLoop_main: Ended; has_events=%d\n", aeHasEvents(self->event_loop));
+    DEBUG_PRINT("Ended");
     Py_RETURN_NONE;
 }
 
@@ -543,7 +556,7 @@ EventLoop_stop(PyObject *self, PyObject *args)
 static PyObject *
 Eventloop_get_out_fd(PyObject *self, PyObject *args)
 {
-    //printf("EventLoop_get_out_fd\n");
+    DEBUG_PRINT("");
     return Py_BuildValue("i", ((EventLoop*)self)->req_out_read);
 }
 
@@ -554,7 +567,7 @@ Eventloop_get_completed(PyObject *self, PyObject *args)
     AcRequestData *rd;
     PyObject *rtn;
     read(((EventLoop*)self)->req_out_read, &rd, sizeof(AcRequestData *));
-    //printf("EventLoop_get_completed_request: read AcRequestData; address=%p\n", rd);
+    DEBUG_PRINT("read AcRequestData; address=%p", rd);
     if(rd->result == CURLE_OK) {
         Response *response = PyObject_New(Response, (PyTypeObject *)&ResponseType);
         response->header_buffer = rd->header_buffer_head;
@@ -638,7 +651,7 @@ static PyTypeObject EventLoopType = {
 
 void socket_event(struct aeEventLoop *eventLoop, int fd, void *clientData, int mask)
 {
-    //printf("socket_event\n");
+    DEBUG_PRINT("eventloop=%p fd=%d clientData=%p mask=%d (readable=%d writable=%d)", eventLoop, fd, clientData, mask, mask & AE_READABLE, mask & AE_WRITABLE);
     int ev_bitmask = 0;
     if(mask & AE_READABLE) 
     {
@@ -654,30 +667,36 @@ void socket_event(struct aeEventLoop *eventLoop, int fd, void *clientData, int m
 
 int socket_callback(CURL *easy, curl_socket_t s, int what, void *userp, void *socketp)
 {
-    //printf("socket_callback: handle=%p socket=%d what=%d\n", easy, s, what);
     int result = 10; //FIXME fake value because of CURL_POLL_REMOVE case
     switch(what) {
         case CURL_POLL_NONE:
-            result = aeCreateFileEvent(SESSION_AE_LOOP(userp), (int)s, AE_NONE, NULL, NULL);
+            DEBUG_PRINT("NONE socket=%d what=%d easy=%p", s, what, easy);
+            //do nothing
             break;
         case CURL_POLL_IN:
+            DEBUG_PRINT("IN socket=%d what=%d easy=%p", s, what, easy);
             result = aeCreateFileEvent(SESSION_AE_LOOP(userp), (int)s, AE_READABLE, socket_event, userp);
+            aeDeleteFileEvent(SESSION_AE_LOOP(userp), (int)s, AE_WRITABLE);
             break;
         case CURL_POLL_OUT:
+            DEBUG_PRINT("OUT socket=%d what=%d easy=%p", s, what, easy);
             result = aeCreateFileEvent(SESSION_AE_LOOP(userp), (int)s, AE_WRITABLE, socket_event, userp);
+            aeDeleteFileEvent(SESSION_AE_LOOP(userp), (int)s, AE_READABLE);
             break;
         case CURL_POLL_INOUT:
+            DEBUG_PRINT("INOUT socket=%d what=%d easy=%p", s, what, easy);
             result = aeCreateFileEvent(SESSION_AE_LOOP(userp), (int)s, AE_READABLE | AE_WRITABLE, socket_event, userp);
             break;
         case CURL_POLL_REMOVE:
+            DEBUG_PRINT("REMOVE socket=%d what=%d easy=%p", s, what, easy);
             aeDeleteFileEvent(SESSION_AE_LOOP(userp), (int)s, AE_READABLE | AE_WRITABLE);
             break;
     };
     if(result == AE_ERR) {
-        //printf("socket_callback failed\n");
+        fprintf(stderr, "socket_callback failed\n");
         exit(1);
     }
-    return 0;
+    return 0; 
 }
 
 
@@ -685,7 +704,7 @@ int socket_callback(CURL *easy, curl_socket_t s, int what, void *userp, void *so
 
 int timeout(struct aeEventLoop *eventLoop, long long id, void *clientData) 
 {
-    //printf("timeout\n");
+    DEBUG_PRINT("");
     Session *session = (Session*)clientData;
     session->timer_id = NO_ACTIVE_TIMER_ID;
     socket_action_and_response_complete(session, CURL_SOCKET_TIMEOUT, 0);
@@ -695,19 +714,19 @@ int timeout(struct aeEventLoop *eventLoop, long long id, void *clientData)
 
 int timer_callback(CURLM *multi, long timeout_ms, void *userp)
 {
-    //printf("timeout_callback: timeout_ms=%ld\n", timeout_ms);
+    DEBUG_PRINT("timeout_ms=%ld", timeout_ms);
     Session *session = (Session*)userp;
     if(session->timer_id != NO_ACTIVE_TIMER_ID) {
-        //printf("timeout_callback: delete timer; session->timer_id=%ld\n", session->timer_id);
+        DEBUG_PRINT("DELETE timer_id=%ld", session->timer_id);
         aeDeleteTimeEvent(SESSION_AE_LOOP(session), session->timer_id);
         session->timer_id = NO_ACTIVE_TIMER_ID;
     }
     if(timeout_ms > 0) {
         if((session->timer_id = aeCreateTimeEvent(SESSION_AE_LOOP(session), timeout_ms, timeout, userp, NULL)) == AE_ERR) {
-            //printf("timer_callback failed\n");
+            fprintf(stderr, "timer_callback failed\n");
             exit(1);
         }
-        //printf("timeout_callback: create timer; session->timer_id=%ld\n", session->timer_id);
+        DEBUG_PRINT("CREATE timer_id=%ld", session->timer_id);
     }
     else if(timeout_ms == 0) {
         socket_action_and_response_complete((Session*)userp, CURL_SOCKET_TIMEOUT, 0);
@@ -752,6 +771,7 @@ Session_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 static void
 Session_dealloc(Session *self)
 {
+    DEBUG_PRINT("response=%p", self);
     curl_multi_cleanup(self->multi);
     curl_share_cleanup(self->shared);
     Py_XDECREF(self->loop);
@@ -814,7 +834,7 @@ Session_request(Session *self, PyObject *args, PyObject *kwds)
     rd->req_data_buf = req_data_buf;
 
     write(self->loop->req_in_write, &rd, sizeof(AcRequestData *));
-    //printf("Session_request: scheduling request\n");
+    DEBUG_PRINT("scheduling request");
     Py_RETURN_NONE;
 }
 

@@ -44,6 +44,18 @@
 #include "zmalloc.h"
 #include "config.h"
 
+
+#define DEBUG 0
+
+#if defined(DEBUG) && DEBUG > 0
+#include <sys/syscall.h>
+ #define DEBUG_PRINT(fmt, args...) fprintf(stderr, "DEBUG: %s:%d:%s() tid=%ld: " fmt "\n", \
+    __FILE__, __LINE__, __func__, (long)syscall(SYS_gettid), ##args)
+#else
+ #define DEBUG_PRINT(fmt, args...) /* Don't do anything in release builds */
+#endif
+
+
 /* Include the best multiplexing layer supported by this system.
  * The following should be ordered by performances, descending. */
 #ifdef HAVE_EVPORT
@@ -149,6 +161,7 @@ int aeCreateFileEvent(aeEventLoop *eventLoop, int fd, int mask,
     fe->clientData = clientData;
     if (fd > eventLoop->maxfd)
         eventLoop->maxfd = fd;
+	DEBUG_PRINT("fd=%d fe->mask=%d", fd, fe->mask);
     return AE_OK;
 }
 
@@ -168,6 +181,7 @@ void aeDeleteFileEvent(aeEventLoop *eventLoop, int fd, int mask)
             if (eventLoop->events[j].mask != AE_NONE) break;
         eventLoop->maxfd = j;
     }
+	DEBUG_PRINT("fd=%d fe->mask=%d", fd, fe->mask);
 }
 
 int aeGetFileEvents(aeEventLoop *eventLoop, int fd) {
@@ -396,7 +410,6 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
                 tvp = NULL; /* wait forever */
             }
         }
-
         numevents = aeApiPoll(eventLoop, tvp);
         for (j = 0; j < numevents; j++) {
             aeFileEvent *fe = &eventLoop->events[eventLoop->fired[j].fd];
@@ -407,7 +420,9 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
 	    /* note the fe->mask & mask & ... code: maybe an already processed
              * event removed an element that fired and we still didn't
              * processed, so we check if the event is still valid. */
+			DEBUG_PRINT("fd=%d fe->mask=%d", fd, fe->mask);
             if (fe->mask & mask & AE_READABLE) {
+				DEBUG_PRINT("fd=%d fe->mask=%d", fd, fe->mask);
                 rfired = 1;
                 fe->rfileProc(eventLoop,fd,fe->clientData,mask);
             }
