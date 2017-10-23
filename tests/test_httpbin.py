@@ -21,6 +21,16 @@ def test_cookies():
     r = _await(s.get('https://httpbin.org/cookies/set?name=value'))
     assert r.cookies == {'name': 'value'}
 
+def test_session_cookies():
+    s = session()
+    r = _await(s.get('https://httpbin.org/cookies/set?name=value'))
+    cookie_list = _await(s.get_cookie_list())
+    assert len(cookie_list) == 1
+    assert cookie_list[0].name == 'name'
+    _await(s.erase_all_cookies())
+    cookie_list = _await(s.get_cookie_list())
+    assert len(cookie_list) == 0
+
 def test_set_cookies():
     s = session()
     r = _await(s.get('https://httpbin.org/cookies/set?name=value'))

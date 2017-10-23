@@ -354,6 +354,24 @@ class Session:
         else:
             return response
 
+    async def _dummy_request(self, cookies):
+        future = asyncio.futures.Future(loop=self._loop)
+        self._session.request(future, 'GET', 'http://example.com', headers=tuple(), cookies=cookies, auth=None, data=None, dummy=True)
+        return await future
+
+    async def erase_all_cookies(self):
+        await self._dummy_request(('ALL',))
+
+    async def erase_session_cookies(self):
+        await self._dummy_request(('SESS',))
+
+    async def get_cookie_list(self):
+        resp = await self._dummy_request(tuple())
+        return [parse_cookie_string(cookie) for cookie in resp.get_cookielist()]
+
+    async def add_cookie_list(self, cookie_list):
+        await self._dummy_request(tuple(c.format() for c in cookie_list))
+
 
 class EventLoop:
     def __init__(self, loop=None):
