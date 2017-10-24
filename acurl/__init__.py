@@ -26,6 +26,22 @@ class Cookie:
         self._name = name
         self._value = value
 
+    def __repr__(self):
+        return ("Cookie(http_only={}, domain={}, include_subdomains={}, path={}, is_secure={}, "
+                "expiration={}, name={}, value={})").format(
+            self._http_only,
+            self._domain,
+            self._include_subdomains,
+            self._path,
+            self._is_secure,
+            self._expiration,
+            self._name,
+            self._value,
+            )
+
+    def __str__(self):
+        return self.__repr__()
+
     @property
     def http_only(self):
         return self._http_only
@@ -406,9 +422,8 @@ class EventLoop:
             future.set_result(response)
         elif error != None and response == None:
             future.set_exception(RequestError(error))
-        
 
     def session(self):
-        return  Session(self._ae_loop, self._loop)
+        return Session(self._ae_loop, self._loop)
 
 
