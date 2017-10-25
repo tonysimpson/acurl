@@ -362,11 +362,16 @@ class Session:
         redirect_url = _response.get_redirect_url()
         response = Response(req, _response, start_time)
         if allow_redirects and redirect_url is not None:
-            if remaining_redirects == 0:
-                raise RequestError('Max Redirects')
-            redir_response = await self._request('GET', redirect_url, headers, tuple(), auth, None, True, remaining_redirects - 1)
-            redir_response._prev = response
-            return redir_response
+            status_code = _response.get_response_code()
+            if 300 <= status_code < 400:
+                if remaining_redirects == 0:
+                    raise RequestError('Max Redirects')
+                if status_code in {301, 302, 303}:
+                    redir_response = await self._request('GET', redirect_url, headers, tuple(), auth, None, True, remaining_redirects - 1)
+                else:
+                    redir_response = await self._request(method, redirect_url, headers, cookie_list, auth, data, True, remaining_redirects - 1)
+                redir_response._prev = response
+                return redir_response
         else:
             return response
 
