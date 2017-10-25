@@ -372,8 +372,7 @@ class Session:
                     redir_response = await self._request(method, redirect_url, headers, cookie_list, auth, data, True, remaining_redirects - 1)
                 redir_response._prev = response
                 return redir_response
-        else:
-            return response
+        return response
 
     async def _dummy_request(self, cookies):
         future = asyncio.futures.Future(loop=self._loop)
