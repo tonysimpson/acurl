@@ -311,6 +311,7 @@ class Session:
     def __init__(self, ae_loop, loop):
         self._loop = loop
         self._session = _acurl.Session(ae_loop)
+        self._response_callback = None
 
     async def get(self, url, **kwargs):
         return await self.request('GET', url, **kwargs)
@@ -352,6 +353,9 @@ class Session:
                 cookie_list.append(session_cookie_for_url(url, k, v))
         return await self._request(method, url, tuple_headers, tuple(cookie_list), auth, data, allow_redirects, max_redirects)
 
+    def set_response_callback(self, callback):
+        self._response_callback = callback
+
     async def _request(self, method, url, headers, cookie_list, auth, data, allow_redirects, remaining_redirects):
         req = Request(method, url, headers, cookie_list, auth, data)
         future = asyncio.futures.Future(loop=self._loop)
@@ -361,6 +365,8 @@ class Session:
         _response = await future
         redirect_url = _response.get_redirect_url()
         response = Response(req, _response, start_time)
+        if self._response_callback:
+            self._response_callback(response)
         if allow_redirects and redirect_url is not None:
             status_code = _response.get_response_code()
             if 300 <= status_code < 400:
