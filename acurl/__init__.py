@@ -376,7 +376,7 @@ class Session:
 
     async def _dummy_request(self, cookies):
         future = asyncio.futures.Future(loop=self._loop)
-        self._session.request(future, 'GET', 'http://example.com', headers=tuple(), cookies=cookies, auth=None, data=None, dummy=True)
+        self._session.request(future, 'GET', '', headers=tuple(), cookies=cookies, auth=None, data=None, dummy=True)
         return await future
 
     async def erase_all_cookies(self):

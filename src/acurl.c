@@ -832,6 +832,7 @@ Session_request(Session *self, PyObject *args, PyObject *kwds)
 
     rd->req_data_len = req_data_len;
     rd->req_data_buf = req_data_buf;
+    rd->dummy = dummy;
 
     write(self->loop->req_in_write, &rd, sizeof(AcRequestData *));
     DEBUG_PRINT("scheduling request");
