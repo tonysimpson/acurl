@@ -105,7 +105,12 @@ def parse_cookie_string(cookie_string):
         cookie_string = cookie_string[10:]
     else:
         http_only = False
-    domain, include_subdomains, path, is_secure, expiration, name, value = cookie_string.split('\t')
+    parts = cookie_string.split('\t')
+    if len(parts) == 6:
+        domain, include_subdomains, path, is_secure, expiration, name = parts
+        value = ''
+    else:
+        domain, include_subdomains, path, is_secure, expiration, name, value = parts
     return Cookie(http_only, domain, include_subdomains == 'TRUE', path, is_secure == 'TRUE', int(expiration), name, value)
 
 
