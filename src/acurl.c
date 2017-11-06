@@ -477,6 +477,8 @@ void curl_easy_cleanup_in_eventloop(struct aeEventLoop *eventLoop, int fd, void 
 }
 
 
+
+
 static PyObject *
 EventLoop_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 {
@@ -486,7 +488,7 @@ EventLoop_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
     int stop[2];
     int curl_easy_cleanup[2];
     if (self != NULL) {
-        self->event_loop = aeCreateEventLoop(10000);
+        self->event_loop = aeCreateEventLoop(200);
         pipe(req_in);
         self->req_in_read = req_in[0];
         self->req_in_write = req_in[1];
