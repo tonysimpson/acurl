@@ -451,9 +451,8 @@ void start_request(struct aeEventLoop *eventLoop, int fd, void *clientData, int 
         write(loop->req_out_write, &rd, sizeof(AcRequestData *));
     }
     else {
+        DEBUG_PRINT("adding handle");
         curl_multi_add_handle(rd->session->multi, rd->curl);
-        DEBUG_PRINT("added handle");
-        socket_action_and_response_complete(rd->session, CURL_SOCKET_TIMEOUT, 0);
     }
     return;
 }
@@ -723,15 +722,12 @@ int timer_callback(CURLM *multi, long timeout_ms, void *userp)
         aeDeleteTimeEvent(SESSION_AE_LOOP(session), session->timer_id);
         session->timer_id = NO_ACTIVE_TIMER_ID;
     }
-    if(timeout_ms > 0) {
+    if(timeout_ms >= 0) {
         if((session->timer_id = aeCreateTimeEvent(SESSION_AE_LOOP(session), timeout_ms, timeout, userp, NULL)) == AE_ERR) {
             fprintf(stderr, "timer_callback failed\n");
             exit(1);
         }
         DEBUG_PRINT("CREATE timer_id=%ld", session->timer_id);
-    }
-    else if(timeout_ms == 0) {
-        socket_action_and_response_complete((Session*)userp, CURL_SOCKET_TIMEOUT, 0);
     }
     return 0;
 }
