@@ -36,6 +36,8 @@ static inline double gettime(void) {
     #define EXIT()
 #endif
 
+#define likely(x)       __builtin_expect((x),1)
+#define unlikely(x)     __builtin_expect((x),0)
 
 typedef struct {
     PyObject_HEAD
@@ -445,20 +447,16 @@ void socket_action_and_response_complete(Session *session, curl_socket_t socket,
 
 static size_t header_callback(char *ptr, size_t size, size_t nmemb, void *userdata) {
     ENTER();
-    if(size * nmemb == 0) {
-        EXIT();
-        return 0;
-    }
     AcRequestData *rd = (AcRequestData *)userdata;
     struct BufferNode *node = (struct BufferNode *)malloc(sizeof(struct BufferNode));
     node->len = size * nmemb;
     node->buffer = (char*)malloc(node->len);
     memcpy(node->buffer, ptr, node->len);
     node->next = NULL;
-    if(rd->header_buffer_head == NULL) {
+    if(unlikely(rd->header_buffer_head == NULL)) {
         rd->header_buffer_head = node;
     }
-    if(rd->header_buffer_tail != NULL) {
+    if(likely(rd->header_buffer_tail != NULL)) {
         rd->header_buffer_tail->next = node;
     }
     rd->header_buffer_tail = node;
@@ -469,20 +467,16 @@ static size_t header_callback(char *ptr, size_t size, size_t nmemb, void *userda
 
 size_t body_callback(char *ptr, size_t size, size_t nmemb, void *userdata) {
     ENTER();
-    if(size * nmemb == 0) {
-        EXIT();
-        return 0;
-    }
     AcRequestData *rd = (AcRequestData *)userdata;
     struct BufferNode *node = (struct BufferNode *)malloc(sizeof(struct BufferNode));
     node->len = size * nmemb;
     node->buffer = (char*)malloc(node->len);
     memcpy(node->buffer, ptr, node->len);
     node->next = NULL;
-    if(rd->body_buffer_head == NULL) {
+    if(unlikely(rd->body_buffer_head == NULL)) {
         rd->body_buffer_head = node;
     }
-    if(rd->body_buffer_tail != NULL) {
+    if(likely(rd->body_buffer_tail != NULL)) {
         rd->body_buffer_tail->next = node;
     }
     rd->body_buffer_tail = node;
@@ -563,11 +557,17 @@ void curl_easy_cleanup_in_eventloop(struct aeEventLoop *eventLoop, int fd, void 
 {
     ENTER();
     CURL *curl;
-    read(fd, &curl, sizeof(CURL *));
-    DEBUG_PRINT("curl=%p", curl);
-    curl_easy_cleanup(curl);
+    while(true) {
+        int b_read = read(fd, &curl, sizeof(CURL *));
+        if(b_read == -1) {
+            break;
+        }
+        DEBUG_PRINT("curl=%p", curl);
+        curl_easy_cleanup(curl);
+    }
     EXIT();
 }
+
 
 void set_none_blocking(int fd) {
     if(fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK))
@@ -602,6 +602,7 @@ EventLoop_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
         self->stop_write = stop[1];
         pipe(curl_easy_cleanup);
         self->curl_easy_cleanup_read = curl_easy_cleanup[0];
+        set_none_blocking(self->curl_easy_cleanup_read);
         self->curl_easy_cleanup_write = curl_easy_cleanup[1];
         if(aeCreateFileEvent(self->event_loop, self->req_in_read, AE_READABLE, start_request, self) == AE_ERR) {
             exit(1);
