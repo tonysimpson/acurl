@@ -131,12 +131,12 @@ def _cookie_list_to_cookie_dict(cookie_list):
 
 
 class Request:
-    __slots__ = '_method _url _headers _cookie_list _auth _data'.split()
+    __slots__ = '_method _url _header_list _cookie_list _auth _data'.split()
 
-    def __init__(self, method, url, headers, cookie_list, auth, data):
+    def __init__(self, method, url, header_list, cookie_list, auth, data):
         self._method = method
         self._url = url
-        self._headers = headers
+        self._header_list = header_list
         self._cookie_list = cookie_list
         self._auth = auth
         self._data = data
@@ -150,8 +150,12 @@ class Request:
         return self._url
 
     @property
+    def header_list(self):
+        return self._header_list
+
+    @property
     def headers(self):
-        return dict(header.split(': ', 1) for header in self._headers)
+        return dict(header.split(': ', 1) for header in self.header_list)
     
     @property
     def cookie_list(self):
@@ -163,7 +167,7 @@ class Request:
 
     @property
     def auth(self):
-        return self._auth.split(':',1)
+        return self._auth
 
     @property
     def data(self):
@@ -171,20 +175,12 @@ class Request:
 
 
 class Response:
-    __slots__ = '_req _resp _start_time _prev _body _text _header _headers_tuple _headers _encoding _json'.split()
+    __slots__ = '_req _resp _start_time _redirect_url _prev _body _text _header _headers_tuple _headers _encoding _json'.split()
 
     def __init__(self, req, resp, start_time):
         self._req = req
         self._resp = resp
         self._start_time = start_time
-        self._prev = None
-        self._body = None
-        self._text = None
-        self._header = None
-        self._headers_tuple = None
-        self._headers = None
-        self._encoding = None
-        self._json = None
 
     @property
     def request(self):
@@ -202,7 +198,9 @@ class Response:
 
     @property
     def redirect_url(self):
-        return self._resp.get_redirect_url()
+        if not hasattr(self, '_redirect_url'):
+            self._redirect_url = self._resp.get_redirect_url()
+        return self._redirect_url
 
     @property
     def start_time(self):
@@ -255,22 +253,22 @@ class Response:
     @property
     def history(self):
         result = []
-        cur = self._prev
+        cur = getattr(self, '_prev', None)
         while cur is not None:
             result.append(cur)
-            cur = cur._prev
+            cur = getattr(cur, '_prev', None)
         result.reverse()
         return result
 
     @property
     def body(self):
-        if self._body is None:
+        if not hasattr(self, '_body'):
             self._body = b''.join(self._resp.get_body())
         return self._body
     
     @property
     def encoding(self):
-        if self._encoding is None:
+        if not hasattr(self, '_encoding'):
             if 'Content-Type' in self.headers and 'charset=' in self.headers['Content-Type']:
                 self._encoding = self.headers['Content-Type'].split('charset=')[-1].split()[0]
             else:
@@ -283,31 +281,31 @@ class Response:
 
     @property
     def text(self):
-        if self._text is None:
+        if not hasattr(self, '_text'):
             self._text = self.body.decode(self.encoding)
         return self._text
 
     @property
     def json(self):
-        if self._json is None:
+        if not hasattr(self, '_json'):
             self._json = ujson.loads(self.text)
         return self._json
 
     @property
     def headers(self):
-        if self._headers is None:
+        if not hasattr(self, '_headers'):
             self._headers = dict(self.headers_tuple)
         return self._headers
     
     @property
     def headers_tuple(self):
-        if self._headers_tuple is None:
+        if not hasattr(self, '_headers_tuple'):
             self._headers_tuple = tuple(tuple(l.split(': ', 1)) for l in self.header.split('\r\n')[1:-2])
         return self._headers_tuple
 
     @property
     def header(self):
-        if self._header is None:
+        if not hasattr(self, '_header'):
             self._header = b''.join(self._resp.get_header()).decode('ascii')
         return self._header
 
@@ -336,53 +334,56 @@ class Session:
     async def options(self, url, **kwargs):
         return await self.request('OPTIONS', url, **kwargs)
 
-    async def request(self, method, url, headers=None, cookies=None, cookie_list=None, auth=None, data=None, json=None, allow_redirects=True, max_redirects=5):
-        if headers is None:
-            headers = {}
-        if auth is not None:
-            username, password = auth
-            auth = ''.join([username, ':', password])
+    async def request(self, method, url, headers=None, headers_list=None, cookies=None, cookie_list=None, auth=None, data=None, json=None, allow_redirects=True, max_redirects=5):
         if json is not None:
-            if data is not None:
-                raise ValueError('use only one or none of data or json')
+            if data is not None or form_data is not None:
+                raise ValueError('use only one or none of data, json or form_data')
             data = ujson.dumps(json)
-            if 'Content-Type' not in headers:
-                headers['Content-Type'] = 'application/json'
-        tuple_headers = tuple("{}: {}".format(name, value) for name, value in headers.items())
-        if cookie_list is None:
-            cookie_list = []
-        else:
-            cookie_list = list(cookie_list)
-        if cookies is not None:
+            content_type_set = False
+            if headers and 'Content-Type' in headers:
+                content_type_set = True
+            elif headers_list:
+                content_type_set = any(1 for i in headers_list if i.startswith('Content-Type: '))
+            if not content_type_set:
+                if headers_list is None:
+                    headers_list = []
+                headers_list.append('Content-Type: application/json')
+
+        if headers:
+            if headers_list is None:
+                headers_list = []
+            headers_list.extend('%s: %s' % i for i in headers.items())
+
+        if cookies:
+            if cookie_list is None:
+                cookie_list = []
             for k, v in cookies.items():
                 cookie_list.append(session_cookie_for_url(url, k, v))
-        return await self._request(method, url, tuple_headers, tuple(cookie_list), auth, data, allow_redirects, max_redirects)
+
+        return await self._request(method, url, tuple(headers_list) if headers_list else None, tuple(cookie_list) if cookie_list else None, auth, data, allow_redirects, max_redirects)
 
     def set_response_callback(self, callback):
         self._response_callback = callback
 
-    async def _request(self, method, url, headers, cookie_list, auth, data, allow_redirects, remaining_redirects):
-        req = Request(method, url, headers, cookie_list, auth, data)
-        future = asyncio.futures.Future(loop=self._loop)
+    async def _request(self, method, url, header_tuple, cookie_tuple, auth, data, allow_redirects, remaining_redirects):
         start_time = time.time()
-        cookies = tuple(c.format() for c in cookie_list)
-        self._session.request(future, method, url, headers=headers, cookies=cookies, auth=auth, data=data, dummy=False)
-        _response = await future
-        redirect_url = _response.get_redirect_url()
-        response = Response(req, _response, start_time)
+        request = Request(method, url, header_tuple, cookie_tuple, auth, data)
+        
+        future = self._loop.create_future()
+        self._session.request(future, method, url, headers=header_tuple, cookies=tuple(c.format() for c in cookie_tuple) if cookie_tuple else None, auth=auth, data=data, dummy=False)
+        response = Response(request, await future, start_time)
+        
         if self._response_callback:
             self._response_callback(response)
-        if allow_redirects and redirect_url is not None:
-            status_code = _response.get_response_code()
-            if 300 <= status_code < 400:
-                if remaining_redirects == 0:
-                    raise RequestError('Max Redirects')
-                if status_code in {301, 302, 303}:
-                    redir_response = await self._request('GET', redirect_url, headers, tuple(), auth, None, True, remaining_redirects - 1)
-                else:
-                    redir_response = await self._request(method, redirect_url, headers, cookie_list, auth, data, True, remaining_redirects - 1)
-                redir_response._prev = response
-                return redir_response
+        if allow_redirects and (300 <= response.status_code < 400) and response.redirect_url is not None:
+            if remaining_redirects == 0:
+                raise RequestError('Max Redirects')
+            elif response.status_code in {301, 302, 303}:
+                redir_response = await self._request('GET', response.redirect_url, header_tuple, None, auth, None, allow_redirects, remaining_redirects - 1)
+            else:
+                redir_response = await self._request(method, response.redirect_url, header_tuple, None, auth, data, allow_redirects, remaining_redirects - 1)
+            redir_response._prev = response
+            return redir_response
         return response
 
     async def _dummy_request(self, cookies):
@@ -432,11 +433,11 @@ class EventLoop:
         self.stop()
 
     def _complete(self):
-        error, response, future = self._ae_loop.get_completed()
-        if error == None and response != None:
-            future.set_result(response)
-        elif error != None and response == None:
-            future.set_exception(RequestError(error))
+        for error, response, future in self._ae_loop.get_completed():
+            if response is not None:
+                future.set_result(response)
+            else:
+                future.set_exception(RequestError(error))
 
     def session(self):
         return Session(self._ae_loop, self._loop)
