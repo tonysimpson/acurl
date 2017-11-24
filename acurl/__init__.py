@@ -336,8 +336,8 @@ class Session:
 
     async def request(self, method, url, headers=None, headers_list=None, cookies=None, cookie_list=None, auth=None, data=None, json=None, allow_redirects=True, max_redirects=5):
         if json is not None:
-            if data is not None or form_data is not None:
-                raise ValueError('use only one or none of data, json or form_data')
+            if data is not None:
+                raise ValueError('use only one or none of data or json')
             data = ujson.dumps(json)
             content_type_set = False
             if headers and 'Content-Type' in headers:
