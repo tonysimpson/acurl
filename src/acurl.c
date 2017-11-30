@@ -48,8 +48,8 @@ static inline int getmem(void) {
     #define EXIT() fprintf(stderr, "EXIT %ld:%s:%d:%s %.9f\n", (long)syscall(SYS_gettid), __FILE__, __LINE__, __func__, gettime())
 #elif defined(PROFILE) && PROFILE == 2
     #include <sys/syscall.h>
-    #define ENTER() fprintf(stderr, "ENTER %ld:%s:%d:%s %d\n", (long)syscall(SYS_gettid), __FILE__, __LINE__, __func__, getmem())
-    #define EXIT() fprintf(stderr, "EXIT %ld:%s:%d:%s %d\n", (long)syscall(SYS_gettid), __FILE__, __LINE__, __func__, getmem())
+    #define ENTER() fprintf(stderr, "ENTER %s:%d:%s %d\n", __FILE__, __LINE__, __func__, getmem())
+    #define EXIT() fprintf(stderr, "EXIT %s:%d:%s %d\n", __FILE__, __LINE__, __func__, getmem())
 #else
     #define ENTER()
     #define EXIT()
