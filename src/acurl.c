@@ -748,6 +748,17 @@ EventLoop_dealloc(EventLoop *self)
 
 
 static PyObject *
+EventLoop_once(EventLoop *self, PyObject *args)
+{
+    ENTER();
+    aeProcessEvents(self->event_loop, AE_ALL_EVENTS|AE_DONT_WAIT);
+    Py_INCREF(Py_None);
+    EXIT();
+    return Py_None;
+}
+
+
+static PyObject *
 EventLoop_main(EventLoop *self, PyObject *args)
 {
     ENTER();
@@ -800,22 +811,33 @@ Eventloop_get_completed(PyObject *self, PyObject *args)
         }
         REQUEST_TRACE_PRINT("Eventloop_get_completed", rd);
         DEBUG_PRINT("read AcRequestData; address=%p", rd);
+        PyObject *tuple = PyTuple_New(3);
         if(rd->result == CURLE_OK) {
             Response *response = PyObject_New(Response, (PyTypeObject *)&ResponseType);
             response->header_buffer = rd->header_buffer_head;
             response->body_buffer = rd->body_buffer_head;
             response->curl = rd->curl;
             response->session = rd->session;
-            PyList_Append(list, Py_BuildValue("ONN", Py_None, response, rd->future));
+
+            Py_INCREF(Py_None);
+            PyTuple_SET_ITEM(tuple, 0, Py_None);
+            PyTuple_SET_ITEM(tuple, 1, (PyObject*)response);
+            PyTuple_SET_ITEM(tuple, 2, rd->future);
         }
         else {
             PyObject* error = PyUnicode_FromString(curl_easy_strerror(rd->result));
             free_buffer_nodes(rd->header_buffer_head);
             free_buffer_nodes(rd->body_buffer_head);
             curl_easy_cleanup(rd->curl);
-            Py_XDECREF(rd->session);
-            PyList_Append(list, Py_BuildValue("NON", error, Py_None, rd->future));
+            Py_DECREF(rd->session);
+            
+            PyTuple_SET_ITEM(tuple, 0, error);
+            Py_INCREF(Py_None);
+            PyTuple_SET_ITEM(tuple, 1, Py_None);
+            PyTuple_SET_ITEM(tuple, 2, rd->future);
         }
+        PyList_Append(list, tuple);
+        Py_DECREF(tuple);
         if(rd->req_data_buf != NULL) {
             free(rd->req_data_buf);
         }
@@ -829,6 +851,7 @@ Eventloop_get_completed(PyObject *self, PyObject *args)
 
 static PyMethodDef EventLoop_methods[] = {
     {"main", (PyCFunction)EventLoop_main, METH_NOARGS, "Run the event loop"},
+    {"once", (PyCFunction)EventLoop_once, METH_NOARGS, "Run the event loop once"},
     {"stop", EventLoop_stop, METH_NOARGS, "Stop the event loop"},
     {"get_out_fd", Eventloop_get_out_fd, METH_NOARGS, "Get the outbound file dscriptor"},
     {"get_completed", Eventloop_get_completed, METH_NOARGS, "Get the user_object, response and error"},

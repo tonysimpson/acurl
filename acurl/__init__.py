@@ -404,17 +404,22 @@ class Session:
     async def add_cookie_list(self, cookie_list):
         await self._dummy_request(tuple(c.format() for c in cookie_list))
 
-
 class EventLoop:
-    def __init__(self, loop=None):
+    def __init__(self, loop=None, same_thread=False):
         self._loop = loop if loop is not None else asyncio.get_event_loop()
         self._ae_loop =  _acurl.EventLoop()
         self._running = False
         self._loop.add_reader(self._ae_loop.get_out_fd(), self._complete)
-        self.start_thread_if_needed()
+        if same_thread:
+            self._loop.call_later(0, self._same_thread_runner)
+        else:
+            self._run_in_thread()
 
-    def start_thread_if_needed(self):
-        #print("start_thread_if_needed: running={}".format(self._running))
+    def _same_thread_runner(self):
+        self._ae_loop.once()
+        self._loop.call_later(0.001, self._same_thread_runner)
+
+    def _run_in_thread(self):
         if not self._running:
             self._running = True
             self._thread = threading.Thread(target=self._runner, daemon=True)
@@ -422,7 +427,6 @@ class EventLoop:
 
     def _runner(self):
         self._ae_loop.main()
-        #print("runner: ae loop finished")
         self._running = False
 
     def stop(self):
