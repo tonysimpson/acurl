@@ -9,14 +9,13 @@
 #include "structmember.h"
 
 #define NO_ACTIVE_TIMER_ID -1
-#define SESSION_AE_LOOP(session) (((Session*)session)->loop->event_loop)
 
 #define DEBUG 0
 #if defined(DEBUG) && DEBUG > 0
     #include <sys/syscall.h>
     #define DEBUG_PRINT(fmt, args...) fprintf(stderr, "DEBUG: %s:%d:%s() tid=%ld: " fmt "\n", __FILE__, __LINE__, __func__, (long)syscall(SYS_gettid), ##args)
 #else
-    #define DEBUG_PRINT(fmt, args...) /* Don't do anything in release builds */
+    #define DEBUG_PRINT(fmt, args...) 
 #endif
 
 #include <time.h>
@@ -24,6 +23,14 @@ static inline double gettime(void) {
     struct timespec tp;
     clock_gettime(CLOCK_REALTIME, &tp);
     return ((double)tp.tv_sec) + ((double)tp.tv_nsec  / 1000000000.0);
+}
+
+static inline int getmem(void) {
+    int mem;
+    FILE *f = fopen("/proc/self/statm", "rb");
+    fscanf(f, "%*d %d", &mem);
+    fclose(f);
+    return mem * 4096;
 }
 
 #define REQUEST_TRACE 0
@@ -39,6 +46,10 @@ static inline double gettime(void) {
     #include <sys/syscall.h>
     #define ENTER() fprintf(stderr, "ENTER %ld:%s:%d:%s %.9f\n", (long)syscall(SYS_gettid), __FILE__, __LINE__, __func__, gettime())
     #define EXIT() fprintf(stderr, "EXIT %ld:%s:%d:%s %.9f\n", (long)syscall(SYS_gettid), __FILE__, __LINE__, __func__, gettime())
+#elif defined(PROFILE) && PROFILE == 2
+    #include <sys/syscall.h>
+    #define ENTER() fprintf(stderr, "ENTER %ld:%s:%d:%s %d\n", (long)syscall(SYS_gettid), __FILE__, __LINE__, __func__, getmem())
+    #define EXIT() fprintf(stderr, "EXIT %ld:%s:%d:%s %d\n", (long)syscall(SYS_gettid), __FILE__, __LINE__, __func__, getmem())
 #else
     #define ENTER()
     #define EXIT()
