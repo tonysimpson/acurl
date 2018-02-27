@@ -285,7 +285,6 @@ class Response:
             self._text = self.body.decode(self.encoding)
         return self._text
 
-    @property
     def json(self):
         if not hasattr(self, '_json'):
             self._json = ujson.loads(self.text)
