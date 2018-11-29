@@ -10,6 +10,8 @@
 
 #define NO_ACTIVE_TIMER_ID -1
 
+/* Macro for debugging */
+
 #define DEBUG 0
 #if defined(DEBUG) && DEBUG > 0
     #include <sys/syscall.h>
@@ -25,6 +27,8 @@ static inline double gettime(void) {
     return ((double)tp.tv_sec) + ((double)tp.tv_nsec  / 1000000000.0);
 }
 
+/* For finding memory used by the program */
+
 static inline int getmem(void) {
     int mem;
     FILE *f = fopen("/proc/self/statm", "rb");
@@ -33,6 +37,8 @@ static inline int getmem(void) {
     return mem * 4096;
 }
 
+/* Macro for debugging */
+
 #define REQUEST_TRACE 0
 #if defined(REQUEST_TRACE) && REQUEST_TRACE > 0
     #include <sys/syscall.h>
@@ -40,6 +46,8 @@ static inline int getmem(void) {
 #else
     #define REQUEST_TRACE_PRINT(location, pointer) /* Don't do anything in release builds */
 #endif
+
+/* Can be enabled to trace time or memory usage*/
 
 #define PROFILE 0
 #if defined(PROFILE) && PROFILE == 1
@@ -54,6 +62,8 @@ static inline int getmem(void) {
     #define ENTER()
     #define EXIT()
 #endif
+
+/* Used to tell gcc about expected code branches, likely not necessary */
 
 #define likely(x)       __builtin_expect((x),1)
 #define unlikely(x)     __builtin_expect((x),0)
@@ -82,6 +92,8 @@ typedef struct {
     CURLSH *shared;
 } Session;
 
+/* Node in a linked list structure. Used for piecing together sections of resposnes e.g. headers and body. 
+ * Possible optimisation to have a memory pool for buffer nodes so they aren't being malloc'ed all the time */
 
 struct BufferNode {
     int len;
@@ -134,6 +146,7 @@ void free_buffer_nodes(struct BufferNode *start) {
     EXIT();
 }
 
+/* Python deallocator for Response Object. For GC */
 
 static void Response_dealloc(Response *self)
 {
@@ -358,11 +371,11 @@ static PyMethodDef Response_methods[] = {
     {"get_effective_url", (PyCFunction)Response_get_effective_url, METH_NOARGS, ""},
     {"get_response_code", (PyCFunction)Response_get_response_code, METH_NOARGS, ""},
     {"get_total_time", (PyCFunction)Response_get_total_time, METH_NOARGS, ""},
-    {"get_namelookup_time", (PyCFunction)Response_get_namelookup_time, METH_NOARGS, ""},
-    {"get_connect_time", (PyCFunction)Response_get_connect_time, METH_NOARGS, ""},
-    {"get_appconnect_time", (PyCFunction)Response_get_appconnect_time, METH_NOARGS, ""},
-    {"get_pretransfer_time", (PyCFunction)Response_get_pretransfer_time, METH_NOARGS, ""},
-    {"get_starttransfer_time", (PyCFunction)Response_get_starttransfer_time, METH_NOARGS, ""},
+    {"get_namelookup_time", (PyCFunction)Response_get_namelookup_time, METH_NOARGS, "Gets elapsed time from start of request to when DNS was resolved in seconds"},
+    {"get_connect_time", (PyCFunction)Response_get_connect_time, METH_NOARGS, "Get elapsed time from start of request to TCP connect in seconds"},
+    {"get_appconnect_time", (PyCFunction)Response_get_appconnect_time, METH_NOARGS, "Get elapsed time from start of request to TLS/SSL negotioation complete in seconds"},
+    {"get_pretransfer_time", (PyCFunction)Response_get_pretransfer_time, METH_NOARGS, "Get elapsed time from start of request we've started to send the request"},
+    {"get_starttransfer_time", (PyCFunction)Response_get_starttransfer_time, METH_NOARGS, "Get elapsed time from start of request until the first byte is recieved in seconds"},
     {"get_size_upload", (PyCFunction)Response_get_size_upload, METH_NOARGS, ""},
     {"get_size_download", (PyCFunction)Response_get_size_download, METH_NOARGS, ""},
     {"get_primary_ip", (PyCFunction)Response_get_primary_ip, METH_NOARGS, ""},
@@ -420,6 +433,7 @@ static PyTypeObject ResponseType = {
     0,                         /* tp_new */
 };
 
+/* When at least one request has completed, write completed responses onto completion queue*/
 
 void response_complete(EventLoop *loop) 
 {
@@ -463,6 +477,7 @@ void socket_action_and_response_complete(EventLoop *loop, curl_socket_t socket, 
     EXIT();
 }
 
+/* See docs for CURLOPT_HEADERFUNCTION */
 
 static size_t header_callback(char *ptr, size_t size, size_t nmemb, void *userdata) {
     ENTER();
@@ -482,7 +497,8 @@ static size_t header_callback(char *ptr, size_t size, size_t nmemb, void *userda
     EXIT();
     return node->len;
 }
- 
+
+/* See docs for CURLOPT_WTIE_FUNCTION */
 
 size_t body_callback(char *ptr, size_t size, size_t nmemb, void *userdata) {
     ENTER();
@@ -571,6 +587,7 @@ void stop_eventloop(struct aeEventLoop *eventLoop, int fd, void *clientData, int
     EXIT();
 }
 
+/* Used to cleanup curl handles by putting the handle back on a pipe to be picked up and cleaned up */
 
 void curl_easy_cleanup_in_eventloop(struct aeEventLoop *eventLoop, int fd, void *clientData, int mask)
 {
@@ -650,6 +667,7 @@ int timeout(struct aeEventLoop *eventLoop, long long id, void *clientData)
     return AE_NOMORE;
 }
 
+/* See docs for CURLMOPT_TIMERFUNCTION */
 
 int timer_callback(CURLM *multi, long timeout_ms, void *userp)
 {
@@ -787,6 +805,8 @@ EventLoop_stop(PyObject *self, PyObject *args)
     EXIT();
     return Py_None;
 }
+
+/* Get the out pipe */
 
 static PyObject *
 Eventloop_get_out_fd(PyObject *self, PyObject *args)

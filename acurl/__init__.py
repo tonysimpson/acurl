@@ -408,6 +408,7 @@ class EventLoop:
         self._loop = loop if loop is not None else asyncio.get_event_loop()
         self._ae_loop =  _acurl.EventLoop()
         self._running = False
+        # Completed requests end up on the fd pipe, complete callback called
         self._loop.add_reader(self._ae_loop.get_out_fd(), self._complete)
         if same_thread:
             self._loop.call_later(0, self._same_thread_runner)
@@ -415,6 +416,7 @@ class EventLoop:
             self._run_in_thread()
 
     def _same_thread_runner(self):
+        """Start event loop in normal python thread, allows use of python debugger and profiler"""
         self._ae_loop.once()
         self._loop.call_later(0.001, self._same_thread_runner)
 
